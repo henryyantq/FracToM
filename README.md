@@ -46,6 +46,18 @@ Python ≥ 3.9
 PyTorch ≥ 2.0
 ```
 
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
 No other dependencies are required for the core architecture.
 
 核心架构不需要其他依赖项。
