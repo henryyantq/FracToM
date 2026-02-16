@@ -1147,7 +1147,7 @@ If you use FracToM in your research, please cite:
   title   = {FracToM: Fractal Theory-of-Mind Neural Network},
   author  = {Yan, T.},
   year    = {2026},
-  url     = {https://github.com/...},
+  url     = {https://github.com/henryyantq/FracToM},
   note    = {A fractal neural architecture for interpretable hierarchical mentalizing}
 }
 ```
