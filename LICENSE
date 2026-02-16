@@ -1,0 +1,63 @@
+FracToM Non-Commercial Source-Available License (Version 1.0)
+
+Copyright (c) 2026
+Team ReAL
+
+All rights reserved.
+
+1. Definitions
+“Software” means the FracToM neural network, including all source code, binaries, models, configuration files, and associated documentation contained in this repository.
+
+“You” (or “Your”) means any individual or legal entity exercising permissions granted by this License.
+
+“Non-Commercial Use” means any use that is not primarily intended for or directed toward commercial advantage or monetary compensation of any kind.
+
+2. Grant of Rights (Non-Commercial Only)
+Subject to the terms and conditions of this License, the Licensor hereby grants You a worldwide, royalty-free, non-exclusive, non-transferable, revocable license to:
+
+Access and use the Software for non-commercial purposes.
+
+Reproduce and modify the Software for non-commercial purposes.
+
+Distribute unmodified or modified versions of the Software for non-commercial purposes, provided that:
+
+this License is included in full and
+
+clear and visible attribution to the original authors and the FracToM project is retained.
+
+No patent rights are granted under this License.
+
+3. Prohibited Uses
+You must not, without the Licensor’s prior written permission:
+
+Use the Software, in whole or in part, in any product, service, or system that is offered for a fee or other commercial consideration (including, but not limited to, SaaS, consulting deliverables, or paid research contracts).
+
+Use the Software to develop or train models that are then sold, licensed, or otherwise commercially exploited.
+
+Redistribute the Software, or substantial portions of it, as part of any commercial product or service, or under a license that permits such commercial use.
+
+Use the name “FracToM”, the names of the authors, or related project identifiers to endorse or promote any product or service without explicit written permission.
+
+4. Academic and Research Use
+Academic, educational, and research institutions may use, modify, and redistribute the Software for non-commercial research and teaching purposes under the terms of this License.
+Where reasonably feasible, publications and derived works should cite the original FracToM paper or repository as appropriate.
+
+5. No Sublicensing
+You may not sublicense the Software. Any recipient of the Software must receive it under the terms of this License.
+
+6. Ownership
+The Software is licensed, not sold. The Licensor retains all right, title, and interest in and to the Software, including all intellectual property rights not expressly granted to You under this License.
+
+7. Termination
+This License automatically terminates, without notice, if You breach any of its terms. Upon termination, You must immediately cease all use, distribution, and modification of the Software, and destroy all copies in Your possession or control.
+The Licensor may, at their sole discretion, offer a separate commercial license with different terms.
+
+8. Disclaimer of Warranty
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+IN NO EVENT SHALL THE LICENSOR OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+9. Limitation of Liability
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, DATA, OR GOODWILL, ARISING OUT OF OR IN CONNECTION WITH THE USE OR INABILITY TO USE THE SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+10. Governing Law and Jurisdiction
+This License shall be governed by and construed in accordance with the laws of Monash University, without regard to its conflict of laws principles. Any dispute arising out of or in connection with this License shall be subject to the exclusive jurisdiction of the courts located in Monash University, Clayton Campus, VIC, Australia.
