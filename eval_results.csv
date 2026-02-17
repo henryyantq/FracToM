@@ -1,5 +1,0 @@
-task,model,params,best_acc,final_acc,final_loss,time_sec
-Collaboration,FracToM,1276009,0.894375,0.894375,0.307366,6.9
-Collaboration,FractalGen,576064,0.955625,0.955625,0.117665,3.8
-Collaboration,VanillaTransformer,890284,0.945000,0.945000,0.151163,4.8
-Collaboration,VanillaMLP,49444,0.755000,0.755000,0.605086,0.5
