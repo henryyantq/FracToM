@@ -634,7 +634,7 @@ def evaluate(
         "task": 0.0, "bdi_consistency": 0.0,
         "uncertainty_cal": 0.0, "depth_entropy_reg": 0.0,
         "dag_penalty": 0.0, "causal_sparsity": 0.0,
-        "cf_ordering": 0.0, "total": 0.0,
+        "cf_ordering": 0.0, "aux_deepsup": 0.0, "total": 0.0,
     }
     all_preds: List[Tensor] = []
     all_tgts:  List[Tensor] = []
@@ -922,6 +922,10 @@ def train(args: argparse.Namespace) -> None:
         num_classes=NUM_CLASSES,
         causal_model=args.causal_model,
         causal_noise_dim=args.causal_noise_dim,
+        capacity_schedule=args.capacity_schedule,
+        guiding_belief=args.guiding_belief,
+        gist_dim=args.gist_dim,
+        auxiliary_heads=args.auxiliary_heads,
     ).to(device)
 
     criterion = FracToMLoss(
@@ -932,6 +936,7 @@ def train(args: argparse.Namespace) -> None:
         lambda_dag=args.lambda_dag,
         lambda_causal_sparsity=args.lambda_causal_sparsity,
         lambda_counterfactual=args.lambda_counterfactual,
+        lambda_auxiliary=args.lambda_auxiliary,
     )
 
     optimizer = torch.optim.AdamW(
@@ -943,6 +948,10 @@ def train(args: argparse.Namespace) -> None:
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {total_params:,}")
+    print(f"Column dims: {model.column_dims}")
+    print(f"Capacity schedule: {args.capacity_schedule}")
+    print(f"Guiding belief: {args.guiding_belief}  gist_dim={args.gist_dim}")
+    print(f"Auxiliary heads: {args.auxiliary_heads}  λ_aux={args.lambda_auxiliary}")
     print(f"Causal model: {args.causal_model}")
     if args.causal_model:
         causal_params = (
@@ -1002,12 +1011,15 @@ def train(args: argparse.Namespace) -> None:
                     f" sparse={bd.get('causal_sparsity', 0):.4f}"
                     f" cf={bd.get('cf_ordering', 0):.4f}"
                 )
+            aux_part = ""
+            if args.auxiliary_heads:
+                aux_part = f" aux={bd.get('aux_deepsup', 0):.4f}"
             print(
                 f"          loss → task={bd['task']:.4f} "
                 f"bdi={bd['bdi_consistency']:.4f} "
                 f"unc={bd['uncertainty_cal']:.4f} "
                 f"depth={bd['depth_entropy_reg']:.4f}"
-                f"{causal_parts}"
+                f"{causal_parts}{aux_part}"
             )
 
     print("\nTraining complete.")
@@ -1068,6 +1080,15 @@ def train(args: argparse.Namespace) -> None:
         counterfactual_distances=(
             last_report.counterfactual_distances if last_report else None
         ),
+        auxiliary_logits=(
+            last_report.auxiliary_logits if last_report else None
+        ),
+        guiding_gists=(
+            last_report.guiding_gists if last_report else None
+        ),
+        column_dims=(
+            last_report.column_dims if last_report else None
+        ),
     )
 
     print("\n" + "=" * 90)
@@ -1112,6 +1133,37 @@ def train(args: argparse.Namespace) -> None:
         dw, summary_report.column_uncertainties,
         args.viz_dir, args.viz_heatmap_samples,
     )
+
+    # FractalGen-inspired enhancements diagnostics
+    if last_report is not None:
+        print("\n" + "-" * 60)
+        print("FractalGen-Inspired Enhancements")
+        print("-" * 60)
+        if last_report.column_dims is not None:
+            print("Per-column capacity (capacity_schedule="
+                  f"{args.capacity_schedule}):")
+            for k, d in enumerate(last_report.column_dims):
+                print(f"  Column {k}: dim={d}")
+        if last_report.auxiliary_logits is not None:
+            print("\nAuxiliary head accuracy (deep supervision):")
+            with torch.no_grad():
+                for xb, yb in test_loader:
+                    xb, yb = xb.to(device), yb.to(device)
+                    _, rep = model(xb, return_interpretability=True)
+                    if rep.auxiliary_logits:
+                        for k, al in sorted(rep.auxiliary_logits.items()):
+                            acc = (al.argmax(-1) == yb).float().mean().item()
+                            print(f"  Column {k}: {acc:.3f}")
+                    break  # one batch suffices
+        if last_report.guiding_gists is not None:
+            print("\nGuiding belief gist stats (γ, β norms):")
+            for k, (gamma, beta) in sorted(
+                last_report.guiding_gists.items()
+            ):
+                print(
+                    f"  Column {k}: ‖γ‖={gamma.norm():.4f}  "
+                    f"‖β‖={beta.norm():.4f}"
+                )
 
     # Save causal graph visualization
     if args.causal_model and last_report is not None:
@@ -1161,6 +1213,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--lambda-causal-sparsity",type=float, default=0.005)
     p.add_argument("--lambda-counterfactual", type=float, default=0.01)
 
+    # FractalGen-inspired enhancements
+    p.add_argument("--capacity-schedule", type=str, default="decreasing",
+                   choices=["uniform", "decreasing"],
+                   help="Per-column dim schedule (default: decreasing)")
+    p.add_argument("--guiding-belief",   action="store_true", default=True,
+                   help="Enable guiding belief FiLM module (default: on)")
+    p.add_argument("--no-guiding-belief", dest="guiding_belief",
+                   action="store_false",
+                   help="Disable guiding belief FiLM module")
+    p.add_argument("--gist-dim",         type=int, default=32,
+                   help="Gist dim for guiding belief module")
+    p.add_argument("--auxiliary-heads",  action="store_true", default=True,
+                   help="Enable auxiliary deep supervision heads (default: on)")
+    p.add_argument("--no-auxiliary-heads", dest="auxiliary_heads",
+                   action="store_false",
+                   help="Disable auxiliary deep supervision heads")
+    p.add_argument("--lambda-auxiliary",  type=float, default=0.1,
+                   help="Weight for auxiliary deep supervision loss")
+
     # causal model
     p.add_argument("--causal-model",   action="store_true", default=True,
                    help="Enable Structural Causal Model (default: on)")
@@ -1190,8 +1261,13 @@ def main() -> None:
 
     if not (0.0 < args.train_ratio < 1.0):
         raise ValueError("--train-ratio must be in (0, 1)")
-    if args.hidden_dim % 3 != 0:
-        raise ValueError("--hidden-dim must be divisible by 3 (BDI factors)")
+    from math import gcd
+    _quantum = (3 * args.heads) // gcd(3, args.heads)
+    if args.hidden_dim % _quantum != 0:
+        raise ValueError(
+            f"--hidden-dim must be divisible by lcm(num_bdi_factors=3, "
+            f"num_heads={args.heads}) = {_quantum}"
+        )
     if args.samples < 600:
         raise ValueError("--samples should be ≥ 600 for 6-class balance")
 

@@ -699,6 +699,90 @@ class EpistemicGate(nn.Module):
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
+# ║       GUIDING BELIEF MODULE  (FractalGen-inspired)                 ║
+# ║                                                                    ║
+# ║  Analogous to FractalGen's "guiding pixel" (Li et al., 2025):      ║
+# ║  before fine-grained mentalizing, produce a coarse gist belief     ║
+# ║  that conditions every SelfSimilarBlock via FiLM modulation.       ║
+# ║                                                                    ║
+# ║  Cognitive grounding: "gist processing" (Oliva & Torralba, 2006)   ║
+# ║  — humans form rapid holistic impressions before detailed analysis.║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+
+class GuidingBeliefModule(nn.Module):
+    """Coarse-to-fine conditioning via FiLM modulation.
+
+    Inspired by FractalGen's *guiding pixel* mechanism (Li et al., 2025),
+    this module predicts a low-dimensional "gist belief" from the input
+    representation *before* a mentalizing column processes it.  The gist
+    is then injected into each SelfSimilarBlock via Feature-wise Linear
+    Modulation (FiLM; Perez et al., 2018):
+
+        h' = γ(gist) ⊙ h + β(gist)
+
+    This gives each column a coarse prior over the cognitive situation
+    before running expensive multi-head attention.
+
+    Parameters
+    ----------
+    input_dim : int
+        Dimensionality of the input representation.
+    gist_dim : int
+        Dimensionality of the gist belief vector.
+    output_dim : int
+        Dimensionality of the column hidden states being modulated.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        gist_dim: int = 64,
+        output_dim: int = 256,
+    ):
+        super().__init__()
+        self.gist_encoder = nn.Sequential(
+            nn.Linear(input_dim, gist_dim),
+            nn.GELU(),
+            nn.Linear(gist_dim, gist_dim),
+        )
+        # FiLM parameters: γ and β
+        self.film_gamma = nn.Linear(gist_dim, output_dim)
+        self.film_beta = nn.Linear(gist_dim, output_dim)
+
+        # Initialise γ → 1, β → 0 so the module is identity at init
+        nn.init.ones_(self.film_gamma.bias)
+        nn.init.zeros_(self.film_gamma.weight)
+        nn.init.zeros_(self.film_beta.bias)
+        nn.init.zeros_(self.film_beta.weight)
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """Compute gist belief and FiLM parameters.
+
+        Parameters
+        ----------
+        x : (batch, input_dim)
+
+        Returns
+        -------
+        gamma : (batch, output_dim) — multiplicative modulation.
+        beta  : (batch, output_dim) — additive modulation.
+        """
+        gist = self.gist_encoder(x)  # (B, gist_dim)
+        gamma = self.film_gamma(gist)  # (B, output_dim)
+        beta = self.film_beta(gist)    # (B, output_dim)
+        return gamma, beta
+
+    @staticmethod
+    def modulate(h: Tensor, gamma: Tensor, beta: Tensor) -> Tensor:
+        """Apply FiLM modulation: h' = γ ⊙ h + β."""
+        if h.ndim == 3:  # (B, S, D)
+            gamma = gamma.unsqueeze(1)
+            beta = beta.unsqueeze(1)
+        return gamma * h + beta
+
+
+# ╔══════════════════════════════════════════════════════════════════════╗
 # ║                    BAYESIAN BELIEF REVISION                        ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
@@ -1426,6 +1510,11 @@ class InterpretabilityReport:
     cross_depth_adjacency: Optional[Tensor] = None
     dag_penalty: Optional[Tensor] = None
     counterfactual_distances: Optional[Dict[int, float]] = None
+    # --- FractalGen-inspired enhancements ---
+    auxiliary_logits: Optional[Dict[int, Tensor]] = None
+    guiding_gists: Optional[Dict[int, Tuple[Tensor, Tensor]]] = None
+    column_dims: Optional[List[int]] = None
+    projected_bdi_states: Optional[Dict[int, List[BDIState]]] = None
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
@@ -1553,6 +1642,26 @@ class FracToMNet(nn.Module):
         generation, and cross-depth causal discovery.
     causal_noise_dim : int
         Dimensionality of exogenous noise in structural equations.
+    capacity_schedule : str
+        Per-depth capacity scaling strategy (FractalGen-inspired).
+        ``"uniform"`` — all columns use the same hidden_dim (default,
+        backward-compatible).
+        ``"decreasing"`` — deeper columns use progressively smaller
+        hidden_dim, reflecting Representational Redescription theory
+        (Karmiloff-Smith, 1992): higher-order mentalizing produces
+        *compressed* re-descriptions of lower-order representations.
+        Concrete schedule: dim_k = hidden_dim × (1 − 0.5 × k/K).
+    guiding_belief : bool
+        If True, enable the GuidingBeliefModule that injects a coarse
+        gist belief into each column via FiLM modulation before
+        fine-grained mentalizing (analogous to FractalGen's "guiding
+        pixel"; Li et al., 2025).
+    gist_dim : int
+        Dimensionality of the guiding gist belief vector.
+    auxiliary_heads : bool
+        If True, attach a lightweight per-column auxiliary classification
+        head for deep supervision (FractalGen-inspired: every fractal
+        level generates its own loss signal, preventing dead columns).
     """
 
     def __init__(
@@ -1569,16 +1678,41 @@ class FracToMNet(nn.Module):
         num_classes: Optional[int] = None,
         causal_model: bool = True,
         causal_noise_dim: int = 16,
+        capacity_schedule: str = "uniform",
+        guiding_belief: bool = True,
+        gist_dim: int = 64,
+        auxiliary_heads: bool = True,
     ):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.mentalizing_depth = mentalizing_depth
         self.factor_dim = hidden_dim // num_bdi_factors
+        self.capacity_schedule = capacity_schedule
+        self.use_guiding_belief = guiding_belief
+        self.use_auxiliary_heads = auxiliary_heads and (num_classes is not None)
         assert hidden_dim % num_bdi_factors == 0, (
             f"hidden_dim ({hidden_dim}) must be divisible by "
             f"num_bdi_factors ({num_bdi_factors})"
         )
+
+        # --- Per-depth capacity schedule (FractalGen-inspired) ---
+        # Compute per-column hidden dimensions
+        K = mentalizing_depth
+        # Quantum: column dims must be divisible by both num_bdi_factors
+        # and num_heads to satisfy MultiheadAttention constraints.
+        _quantum = num_bdi_factors * num_heads // math.gcd(num_bdi_factors, num_heads)
+        if capacity_schedule == "decreasing":
+            # dim_k = hidden_dim × (1 − 0.5 × k/K), quantised to _quantum
+            self.column_dims = []
+            for k in range(K + 1):
+                ratio = 1.0 - 0.5 * (k / max(K, 1))
+                raw = int(hidden_dim * ratio)
+                # round down to nearest multiple of _quantum
+                raw = max(raw - raw % _quantum, _quantum)
+                self.column_dims.append(raw)
+        else:  # "uniform"
+            self.column_dims = [hidden_dim] * (K + 1)
 
         # --- Observation encoder → BDI ---
         self.encoder = MentalStateEncoder(
@@ -1587,25 +1721,61 @@ class FracToMNet(nn.Module):
         # project packed BDI (3 × factor_dim) → hidden_dim
         self.input_proj = nn.Linear(self.factor_dim * 3, hidden_dim)
 
+        # --- Per-column input projectors (for capacity scheduling) ---
+        # When column dims differ from hidden_dim, project h_input → col_dim
+        self.col_input_projs = nn.ModuleList([
+            nn.Linear(hidden_dim, self.column_dims[k])
+            if self.column_dims[k] != hidden_dim else nn.Identity()
+            for k in range(K + 1)
+        ])
+        # And project column output → hidden_dim for join/causal
+        self.col_output_projs = nn.ModuleList([
+            nn.Linear(self.column_dims[k], hidden_dim)
+            if self.column_dims[k] != hidden_dim else nn.Identity()
+            for k in range(K + 1)
+        ])
+
         # --- Fractal mentalizing columns ---
+        # Each column_dim is a multiple of _quantum (= lcm(num_bdi_factors,
+        # num_heads)), so column_dim is always divisible by num_heads.
         self.columns = nn.ModuleList([
             FractalMentalizingColumn(
                 depth_index=k,
-                dim=hidden_dim,
-                factor_dim=self.factor_dim,
+                dim=self.column_dims[k],
+                factor_dim=self.column_dims[k] // num_bdi_factors,
                 num_blocks=blocks_per_column,
                 num_heads=num_heads,
                 ff_mult=ff_mult,
                 dropout=dropout,
             )
-            for k in range(mentalizing_depth + 1)
+            for k in range(K + 1)
         ])
 
         # --- Epistemic gates (one per column) ---
         self.epistemic_gates = nn.ModuleList([
-            EpistemicGate(hidden_dim)
-            for _ in range(mentalizing_depth + 1)
+            EpistemicGate(self.column_dims[k])
+            for k in range(K + 1)
         ])
+
+        # --- Guiding Belief Module (FractalGen-inspired) ---
+        self.guiding_beliefs: Optional[nn.ModuleList] = None
+        if guiding_belief:
+            self.guiding_beliefs = nn.ModuleList([
+                GuidingBeliefModule(
+                    input_dim=hidden_dim,
+                    gist_dim=gist_dim,
+                    output_dim=self.column_dims[k],
+                )
+                for k in range(K + 1)
+            ])
+
+        # --- Auxiliary classification heads (deep supervision) ---
+        self.aux_heads: Optional[nn.ModuleList] = None
+        if self.use_auxiliary_heads and num_classes is not None:
+            self.aux_heads = nn.ModuleList([
+                nn.Linear(hidden_dim, num_classes)
+                for _ in range(K + 1)
+            ])
 
         # --- Structural Causal Model (SCM) ---
         self.use_causal = causal_model
@@ -1634,6 +1804,14 @@ class FracToMNet(nn.Module):
             self.cf_obs_transform = nn.Linear(
                 self.factor_dim, self.factor_dim, bias=False,
             )
+            # Per-column BDI projectors: project column's native factor_dim
+            # → SCM factor_dim (needed when capacity_schedule != "uniform")
+            self.bdi_to_scm_projs = nn.ModuleList([
+                nn.Linear(self.column_dims[k] // num_bdi_factors, self.factor_dim)
+                if self.column_dims[k] // num_bdi_factors != self.factor_dim
+                else nn.Identity()
+                for k in range(K + 1)
+            ])
 
         # --- Drop-path ---
         self.drop_path = FractalDropPath(
@@ -1694,25 +1872,58 @@ class FracToMNet(nn.Module):
         h_input = self.input_proj(bdi_init.pack())  # (B, D)
 
         # 2) Run fractal columns (depth 0 … K)
-        column_outputs: List[Tensor] = []
+        column_outputs: List[Tensor] = []     # always hidden_dim
         all_bdis: Dict[int, List[BDIState]] = {}
         all_sigmas: Dict[int, Tensor] = {}
+        guiding_gists: Dict[int, Tuple[Tensor, Tensor]] = {}
+        aux_logits: Dict[int, Tensor] = {}
+        projected_bdis: Dict[int, List[BDIState]] = {}
 
         for k, (col, egate) in enumerate(
             zip(self.columns, self.epistemic_gates)
         ):
-            lower = column_outputs[:k] if k > 0 else None
-            h_col, bdis_col = col(h_input, lower)
+            # Project input to column's native dim
+            h_col_in = self.col_input_projs[k](h_input)
 
-            # epistemic gating
+            # Guiding belief: FiLM conditioning on coarse gist
+            if self.guiding_beliefs is not None:
+                gamma, beta = self.guiding_beliefs[k](h_input)
+                h_col_in = GuidingBeliefModule.modulate(h_col_in, gamma, beta)
+                guiding_gists[k] = (gamma.detach(), beta.detach())
+
+            # Build lower-level outputs in column's native dim for cross-attn
+            # Strategy: take each prior column_output (hidden_dim) and project
+            # to the current column's dim via col_input_projs[k].
+            lower: Optional[List[Tensor]] = None
+            if k > 0:
+                lower = [self.col_input_projs[k](column_outputs[j]) for j in range(k)]
+
+            h_col, bdis_col = col(h_col_in, lower)
+
+            # epistemic gating (in native col dim)
             h_col, sigma_k = egate(h_col)
             all_sigmas[k] = sigma_k
 
-            # drop-path (training only)
+            # drop-path (training only, in native col dim)
             h_col = self.drop_path(h_col, column_index=k)
 
-            column_outputs.append(h_col)
+            # Project to hidden_dim for join & causal modules
+            h_col_out = self.col_output_projs[k](h_col)
+            column_outputs.append(h_col_out)
             all_bdis[k] = bdis_col
+
+            # Store projected BDI states (common factor_dim) for loss
+            _proj_k = self.bdi_to_scm_projs[k]
+            projected_bdis[k] = [
+                BDIState(
+                    _proj_k(b.belief), _proj_k(b.desire), _proj_k(b.intention),
+                )
+                for b in bdis_col
+            ]
+
+            # Auxiliary deep supervision head
+            if self.aux_heads is not None:
+                aux_logits[k] = self.aux_heads[k](h_col_out)
 
         # 2.5) Causal processing via Structural Causal Model
         causal_info: Dict = {}
@@ -1727,6 +1938,14 @@ class FracToMNet(nn.Module):
                 # Get this column's last BDI
                 bdi_k = all_bdis[k][-1]
 
+                # Project column-native BDI → SCM factor_dim
+                _proj = self.bdi_to_scm_projs[k]
+                bdi_k_scm = BDIState(
+                    _proj(bdi_k.belief),
+                    _proj(bdi_k.desire),
+                    _proj(bdi_k.intention),
+                )
+
                 # Route through Pearl's causal hierarchy
                 level_weights = self.causal_router(
                     column_outputs[k], depth_index=k,
@@ -1734,27 +1953,27 @@ class FracToMNet(nn.Module):
                 causal_hierarchy_weights[k] = level_weights
 
                 # Level 1: Association (standard SCM forward)
-                bdi_assoc, scm_info = self.scm(obs_factor, bdi_k)
+                bdi_assoc, scm_info = self.scm(obs_factor, bdi_k_scm)
                 causal_adj = scm_info["adjacency"]
                 dag_pen_total = dag_pen_total + scm_info["dag_penalty"]
 
                 # Level 2: Intervention — do(Belief = belief_k)
                 bdi_interv = self.scm.intervene(
-                    obs_factor, bdi_k,
+                    obs_factor, bdi_k_scm,
                     target=StructuralCausalModel.VAR_BELIEF,
-                    value=bdi_k.belief,
+                    value=bdi_k_scm.belief,
                 )
 
                 # Level 3: Counterfactual — "what if obs were different?"
                 cf_obs = self.cf_obs_transform(obs_factor)
                 bdi_cf = self.scm.counterfactual(
-                    obs_factor, bdi_k, cf_obs,
+                    obs_factor, bdi_k_scm, cf_obs,
                 )
 
                 # Counterfactual distance (interpretability metric)
                 with torch.no_grad():
                     cf_dist_val = (
-                        bdi_cf.pack() - bdi_k.pack()
+                        bdi_cf.pack() - bdi_k_scm.pack()
                     ).norm(dim=-1).mean().item()
                 cf_distances[k] = cf_dist_val
 
@@ -1773,8 +1992,14 @@ class FracToMNet(nn.Module):
                 causal_h = self.causal_to_hidden(blended_bdi)
                 column_outputs[k] = column_outputs[k] + causal_h
 
-            # Cross-depth causal discovery
-            last_bdis = {k: all_bdis[k][-1] for k in all_bdis}
+            # Cross-depth causal discovery (project BDIs to SCM factor_dim)
+            last_bdis: Dict[int, BDIState] = {}
+            for k in all_bdis:
+                _b = all_bdis[k][-1]
+                _p = self.bdi_to_scm_projs[k]
+                last_bdis[k] = BDIState(
+                    _p(_b.belief), _p(_b.desire), _p(_b.intention),
+                )
             cross_adj, cross_pen = self.causal_discovery.discover(
                 last_bdis, obs_factor,
             )
@@ -1813,6 +2038,10 @@ class FracToMNet(nn.Module):
                 counterfactual_distances=causal_info.get(
                     "counterfactual_distances"
                 ),
+                auxiliary_logits=aux_logits if aux_logits else None,
+                guiding_gists=guiding_gists if guiding_gists else None,
+                column_dims=self.column_dims,
+                projected_bdi_states=projected_bdis if projected_bdis else None,
             )
             return out, report
         return out
@@ -1853,6 +2082,10 @@ class FracToMLoss(nn.Module):
     7. **Counterfactual ordering** — deeper mentalizing columns should
        exhibit larger counterfactual distances (richer counterfactual
        reasoning at higher ToM depths).
+    8. **Auxiliary deep supervision** — per-column classification loss
+       inspired by FractalGen (Li et al., 2025): every fractal level
+       produces its own task prediction, preventing gradient starvation
+       and dead columns.
 
     λ coefficients control the balance.
     """
@@ -1866,6 +2099,7 @@ class FracToMLoss(nn.Module):
         lambda_dag: float = 0.1,
         lambda_causal_sparsity: float = 0.005,
         lambda_counterfactual: float = 0.01,
+        lambda_auxiliary: float = 0.1,
     ):
         super().__init__()
         self.task_loss_fn = task_loss_fn or nn.CrossEntropyLoss()
@@ -1875,6 +2109,7 @@ class FracToMLoss(nn.Module):
         self.lambda_dag = lambda_dag
         self.lambda_causal_sparsity = lambda_causal_sparsity
         self.lambda_counterfactual = lambda_counterfactual
+        self.lambda_auxiliary = lambda_auxiliary
 
     def forward(
         self,
@@ -1893,10 +2128,13 @@ class FracToMLoss(nn.Module):
 
         # 2) BDI consistency: cosine distance between adjacent depths
         bdi_loss = torch.tensor(0.0, device=logits.device)
-        depths = sorted(report.bdi_states.keys())
+        # Use projected BDI states (common factor_dim) if available,
+        # so cross-column cosine similarity is well-defined.
+        bdi_src = report.projected_bdi_states or report.bdi_states
+        depths = sorted(bdi_src.keys())
         for i in range(len(depths) - 1):
-            bdis_a = report.bdi_states[depths[i]]
-            bdis_b = report.bdi_states[depths[i + 1]]
+            bdis_a = bdi_src[depths[i]]
+            bdis_b = bdi_src[depths[i + 1]]
             # compare last block's BDI in each column
             a = bdis_a[-1].pack()
             b = bdis_b[-1].pack()
@@ -1958,6 +2196,19 @@ class FracToMLoss(nn.Module):
                 cf_loss = cf_loss / (len(depths) - 1)
         loss = loss + self.lambda_counterfactual * cf_loss
 
+        # 8) Auxiliary deep supervision — per-column classification loss
+        #    (FractalGen-inspired: every fractal level generates its own
+        #    loss, preventing dead columns & gradient starvation)
+        aux_loss = torch.tensor(0.0, device=logits.device)
+        if report.auxiliary_logits:
+            n_aux = 0
+            for k, aux_log in report.auxiliary_logits.items():
+                aux_loss = aux_loss + F.cross_entropy(aux_log, targets)
+                n_aux += 1
+            if n_aux > 0:
+                aux_loss = aux_loss / n_aux
+        loss = loss + self.lambda_auxiliary * aux_loss
+
         breakdown = {
             "task": task.item(),
             "bdi_consistency": bdi_loss.item(),
@@ -1966,6 +2217,7 @@ class FracToMLoss(nn.Module):
             "dag_penalty": dag_loss.item() if isinstance(dag_loss, Tensor) else dag_loss,
             "causal_sparsity": causal_sparse.item() if isinstance(causal_sparse, Tensor) else causal_sparse,
             "cf_ordering": cf_loss.item() if isinstance(cf_loss, Tensor) else cf_loss,
+            "aux_deepsup": aux_loss.item() if isinstance(aux_loss, Tensor) else aux_loss,
             "total": loss.item(),
         }
         return loss, breakdown
@@ -2334,6 +2586,11 @@ def demo_classification() -> None:
         num_classes=NUM_CLASSES,
         causal_model=True,     # enable SCM integration
         causal_noise_dim=16,
+        # --- FractalGen-inspired enhancements ---
+        capacity_schedule="decreasing",  # per-depth capacity scaling
+        guiding_belief=True,             # FiLM gist conditioning
+        gist_dim=32,                     # small for demo
+        auxiliary_heads=True,            # deep supervision
     ).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -2348,6 +2605,7 @@ def demo_classification() -> None:
         lambda_dag=0.1,
         lambda_causal_sparsity=0.005,
         lambda_counterfactual=0.01,
+        lambda_auxiliary=0.1,
     )
     optimiser = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=100)
@@ -2432,6 +2690,25 @@ def demo_classification() -> None:
         for k, w in sorted(causal_graph["hierarchy_weights"].items()):
             parts = "  ".join(f"{level_names[i]}: {w[i]:.3f}" for i in range(3))
             print(f"  Column {k}: {parts}")
+
+    # Show FractalGen-inspired enhancements
+    if report_final.column_dims is not None:
+        print("\nPer-column capacity (FractalGen-inspired scheduling):")
+        for k, d in enumerate(report_final.column_dims):
+            print(f"  Column {k} ({_depth_label(k):20s}): dim={d}")
+
+    if report_final.auxiliary_logits is not None:
+        print("\nAuxiliary head accuracy (deep supervision):")
+        for k, aux_log in sorted(report_final.auxiliary_logits.items()):
+            aux_pred = aux_log.argmax(-1)
+            aux_acc = (aux_pred == y_test).float().mean().item()
+            print(f"  Column {k}: {aux_acc:.3f}")
+
+    if report_final.guiding_gists is not None:
+        print("\nGuiding belief gist stats (γ, β norms):")
+        for k, (g, b) in sorted(report_final.guiding_gists.items()):
+            print(f"  Column {k}: ‖γ‖={g.norm(dim=-1).mean():.4f}  "
+                  f"‖β‖={b.norm(dim=-1).mean():.4f}")
 
     print(f"\n{'=' * 70}")
     print(f"Final test accuracy: {best_acc:.3f}")
