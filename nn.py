@@ -3,9 +3,10 @@ FracToM — Fractal Theory-of-Mind Neural Network
 ================================================
 
 A novel neural architecture that unifies **fractal self-similarity** with
-**Theory-of-Mind (ToM)** inspired hierarchical mentalizing, producing a
-network that is simultaneously more interpretable, more theoretically
-grounded, and structurally richer than standard deep architectures.
+**Theory-of-Mind (ToM)** inspired hierarchical mentalizing and
+**Structural Causal Models (SCM)**, producing a network that is
+simultaneously more interpretable, more theoretically grounded, and
+structurally richer than standard deep architectures.
 
 Theoretical Foundations
 -----------------------
@@ -27,7 +28,22 @@ Theoretical Foundations
    revision modules implement approximate Bayesian updating, maintaining
    calibrated epistemic uncertainty.
 
-5. **Fractal Drop-Path** (adapted from FractalNet):  Entire mentalizing
+5. **Structural Causal Models** (Pearl, 2009):  BDI factors are linked
+   by a *learnable causal graph* with edges Obs→B, B→D, B→I, D→I.
+   The graph is discovered end-to-end via differentiable structure
+   learning (NOTEARS; Zheng et al., 2018) while encoding ToM-specific
+   causal priors from the BDI framework.
+
+6. **Pearl's Causal Hierarchy**:  Mentalizing depths are mapped to
+   Pearl's three levels of causal reasoning:
+   - Level 1 (Association / seeing): depth 0 — direct perception.
+   - Level 2 (Intervention / doing): depth 1 — metacognition.
+   - Level 3 (Counterfactual / imagining): depth 2+ — other-modelling.
+   This mapping reflects cognitive development: children first learn
+   associations, then causal interventions, and finally counterfactuals
+   (Gopnik & Wellman, 2012).
+
+7. **Fractal Drop-Path** (adapted from FractalNet):  Entire mentalizing
    columns can be stochastically dropped during training, which
    (a) regularises, (b) forces every depth to carry meaning independently,
    and (c) mirrors cognitive development where deeper mentalizing emerges
@@ -48,6 +64,14 @@ Let x denote the input observation and M_k the mental model at depth k:
     where α_k(x) are input-dependent, normalised attention weights
     (soft mentalizing-depth selection).
 
+Structural Causal Model:
+    B = f_B(Obs, ε_B)          — belief from observation
+    D = f_D(B, Obs, ε_D)       — desire from belief + context
+    I = f_I(B, D, ε_I)         — intention from belief + desire
+
+    Intervention:  do(B = b) severs Obs→B, recomputes D, I downstream.
+    Counterfactual: abduct ε from (B,D,I)_obs, predict with Obs' + ε.
+
 Key Innovations over Prior Art
 ------------------------------
 * **Fractal mentalizing columns** — unlike vanilla FractalNet columns
@@ -58,6 +82,23 @@ Key Innovations over Prior Art
 * **BDI-factored latent space** — every intermediate representation is
   a structured (Belief, Desire, Intention) triple, enabling direct
   probing and mechanistic interpretability.
+
+* **Causal BDI graph** — a differentiable, learnable DAG over BDI
+  variables replaces arbitrary neural connections with causally-
+  structured information flow, ensuring BDI representations respect
+  the causal semantics of mental-state attribution.
+
+* **Pearl hierarchy routing** — each mentalizing depth is softly routed
+  to a causal reasoning level (association / intervention /
+  counterfactual), grounding fractal depth in Pearl's causal hierarchy.
+
+* **Counterfactual ToM** — the network can answer "what would they
+  believe if they'd seen X?" via abduction-action-prediction,
+  supporting false-belief reasoning and strategic deception detection.
+
+* **Cross-depth causal discovery** — a differentiable structure learning
+  module discovers which mentalizing levels causally influence others,
+  providing scientific insight into ToM's computational structure.
 
 * **Perspective-shifting cross-depth attention** — higher mentalizing
   levels *attend* to lower ones through learned perspective transforms,
@@ -86,8 +127,22 @@ Architecture Overview
   Column_0   Column_1  Column_2  Column_K    ← FractalMentalizingColumn
   (depth 0)  (depth 1) (depth 2) (depth K)     (self-similar ψ blocks)
      │           │         │       │
-     └─────┬─────┴─────────┴── … ──┘
-           ▼
+     ▼           ▼         ▼       ▼
+  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐
+  │ SCM  │  │ SCM  │  │ SCM  │  │ SCM  │   ← StructuralCausalModel
+  │ L1   │  │ L2   │  │ L3   │  │ L3   │     (Pearl hierarchy levels)
+  │Assoc │  │Inter │  │ CF   │  │ CF   │
+  └──┬───┘  └──┬───┘  └──┬───┘  └──┬───┘
+     │         │         │         │
+     └────┬────┴─────────┴── … ───┘
+          │
+          ▼
+  ┌──────────────────────────┐
+  │  Cross-Depth Causal      │  (discover inter-column causal links)
+  │     Discovery            │
+  └──────────┬───────────────┘
+             │
+             ▼
   ┌────────────────────────┐
   │   Attention-Weighted   │  α_k(x) soft join
   │        Join            │
@@ -112,11 +167,20 @@ Usage
         num_bdi_factors=3,     # Belief, Desire, Intention
         num_heads=8,
         dropout=0.1,
+        causal_model=True,     # enable SCM integration
+        causal_noise_dim=16,   # exogenous noise dimensionality
     )
 
     x = torch.randn(32, 128)                     # batch of observations
     out, report = model(x, return_interpretability=True)
-    # report contains per-level attention weights, BDI activations, etc.
+    # report contains per-level attention weights, BDI activations,
+    # causal graph adjacency, Pearl hierarchy weights,
+    # cross-depth causal structure, counterfactual distances, etc.
+
+    # Inspect learned causal graph:
+    causal = extract_causal_graph(report)
+    print(causal["bdi_edges"])        # e.g., [("Obs", "Belief", 0.92), ...]
+    print(causal["hierarchy_weights"])  # Pearl level weights per column
 
 Requirements
 ------------
@@ -684,6 +748,593 @@ class BeliefRevisionModule(nn.Module):
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
+# ║          STRUCTURAL CAUSAL MODEL (SCM) MODULES                     ║
+# ║                                                                    ║
+# ║  Integrates Pearl's Causal Hierarchy (Association, Intervention,   ║
+# ║  Counterfactual) with the fractal mentalizing architecture.        ║
+# ║                                                                    ║
+# ║  References:                                                       ║
+# ║  - Pearl (2009), "Causality" — SCM framework & do-calculus         ║
+# ║  - Zheng et al. (2018), "DAGs with NO TEARS" — differentiable DAG ║
+# ║  - Bratman (1987) — BDI causal structure                           ║
+# ║  - Premack & Woodruff (1978) — ToM as causal mental-state         ║
+# ║    reasoning about hidden variables                                ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+
+class LearnableCausalGraph(nn.Module):
+    """Differentiable Directed Acyclic Graph for causal structure learning.
+
+    Parameterises a continuous adjacency matrix A ∈ ℝ^{d×d} and enforces
+    the DAG constraint via the NOTEARS trace-exponential penalty
+    (Zheng et al., 2018):
+
+        h(A) = tr(e^{A ⊙ A}) − d = 0
+
+    Entry A[i,j] > 0 means variable i causally influences variable j.
+
+    Parameters
+    ----------
+    num_variables : int
+        Number of causal variables (e.g., 4 for Obs, B, D, I).
+    init_sparsity : float
+        Scaling of initial random weights (lower → sparser prior).
+    """
+
+    def __init__(self, num_variables: int, init_sparsity: float = 0.3):
+        super().__init__()
+        self.num_variables = num_variables
+        self.raw_adjacency = nn.Parameter(
+            torch.randn(num_variables, num_variables) * init_sparsity
+        )
+        self.register_buffer(
+            "diag_mask", 1.0 - torch.eye(num_variables),
+        )
+
+    @property
+    def adjacency(self) -> Tensor:
+        """Weighted adjacency matrix ∈ [0, 1]^{d×d}, no self-loops."""
+        return torch.sigmoid(self.raw_adjacency) * self.diag_mask
+
+    def dag_penalty(self) -> Tensor:
+        """NOTEARS acyclicity constraint: h(A) = tr(e^{A⊙A}) − d.
+
+        Returns 0 iff the graph is a DAG.
+        """
+        A = self.adjacency
+        M = A * A  # element-wise square ensures non-negativity
+        # torch.matrix_exp is not implemented on MPS; fall back to CPU.
+        orig_device = M.device
+        expm = torch.matrix_exp(M.cpu()).to(orig_device)
+        return torch.trace(expm) - self.num_variables
+
+    def forward(self) -> Tensor:
+        return self.adjacency
+
+
+class StructuralEquationNetwork(nn.Module):
+    """Neural structural equation for one endogenous variable.
+
+    Implements  X_j = f_j(Pa(X_j), ε_j)  where Pa(X_j) are the weighted
+    causal parents and ε_j is an exogenous noise term.
+
+    The function f_j is a gated MLP: the gate controls how much of the
+    structural output vs. the raw parent signal to use, providing a smooth
+    interpolation between fully-causal and pass-through modes.
+
+    Parameters
+    ----------
+    dim : int
+        Dimensionality of each variable representation.
+    noise_dim : int
+        Dimensionality of the exogenous noise vector ε.
+    dropout : float
+        Dropout rate.
+    """
+
+    def __init__(self, dim: int, noise_dim: int = 16, dropout: float = 0.0):
+        super().__init__()
+        self.dim = dim
+        self.noise_dim = noise_dim
+        self.parent_proj = nn.Linear(dim, dim)
+        self.noise_proj = nn.Linear(noise_dim, dim)
+        self.combine = nn.Sequential(
+            nn.Linear(dim * 2, dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * 2, dim),
+        )
+        self.gate = nn.Sequential(nn.Linear(dim, dim), nn.Sigmoid())
+
+    def forward(
+        self,
+        parent_repr: Tensor,
+        noise: Optional[Tensor] = None,
+    ) -> Tensor:
+        """
+        Parameters
+        ----------
+        parent_repr : (batch, dim) — aggregated parent representation.
+        noise : (batch, noise_dim) — exogenous noise (sampled or inferred).
+
+        Returns
+        -------
+        (batch, dim) — structural equation output.
+        """
+        h_parent = self.parent_proj(parent_repr)
+        if noise is None:
+            noise = torch.randn(
+                parent_repr.shape[0], self.noise_dim,
+                device=parent_repr.device,
+            )
+        h_noise = self.noise_proj(noise)
+        combined = self.combine(torch.cat([h_parent, h_noise], dim=-1))
+        g = self.gate(combined)
+        return g * combined + (1.0 - g) * h_parent
+
+
+class StructuralCausalModel(nn.Module):
+    """Differentiable Structural Causal Model over BDI mental-state variables.
+
+    Encodes the causal structure of Theory-of-Mind reasoning:
+
+        Observation → Belief   (epistemic update)
+        Belief + Context → Desire   (motivational computation)
+        Belief + Desire → Intention   (deliberation)
+
+    The causal graph is **learnable** — initialised from a theoretically-
+    motivated BDI prior but refined through end-to-end gradient descent,
+    achieving causal *discovery* alongside causal *reasoning*.
+
+    Supports all three levels of **Pearl's Causal Hierarchy**:
+
+    Level 1 (Association):  P(I | B, D)
+        Standard forward pass through structural equations.
+
+    Level 2 (Intervention):  P(I | do(B = b), D)
+        ``do``-operator severs incoming edges to the intervention target.
+
+    Level 3 (Counterfactual):  P(I_cf | B_obs, D_obs)
+        Abduction → Action → Prediction cycle (Pearl, 2009).
+
+    Mathematical Formulation
+    ------------------------
+    The SCM is defined by the tuple ⟨U, V, F, P(U)⟩ where:
+    - U = {ε_B, ε_D, ε_I} are exogenous noise variables
+    - V = {Obs, B, D, I} are endogenous variables
+    - F = {f_B, f_D, f_I} are structural equations (neural networks)
+    - P(U) is the distribution over exogenous noise
+
+    Structural equations:
+        B = f_B(Obs, ε_B)          — belief from observation
+        D = f_D(B, Obs, ε_D)       — desire from belief + context
+        I = f_I(B, D, ε_I)         — intention from belief + desire
+
+    Intervention do(B = b):
+        Ĩ = f_I(b, f_D(b, Obs, ε_D), ε_I)   — with Obs→B edge severed
+
+    Counterfactual (given observed BDI, alternative observation Obs'):
+        1. Abduct: ε̂ = g(B_obs, D_obs, I_obs)
+        2. Predict: B_cf = f_B(Obs', ε̂_B), D_cf = f_D(B_cf, Obs', ε̂_D), ...
+
+    Parameters
+    ----------
+    factor_dim : int
+        Dimensionality of each BDI factor.
+    noise_dim : int
+        Exogenous noise dimensionality.
+    dropout : float
+        Dropout rate in structural equations.
+    """
+
+    # Variable indices in the causal graph
+    VAR_OBS = 0
+    VAR_BELIEF = 1
+    VAR_DESIRE = 2
+    VAR_INTENTION = 3
+    NUM_VARS = 4
+
+    def __init__(
+        self,
+        factor_dim: int,
+        noise_dim: int = 16,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.factor_dim = factor_dim
+        self.noise_dim = noise_dim
+
+        # Learnable causal graph over {Obs, B, D, I}
+        self.causal_graph = LearnableCausalGraph(
+            num_variables=self.NUM_VARS,
+            init_sparsity=0.3,
+        )
+
+        # Initialise with BDI prior (Bratman, 1987):
+        #   Obs → B (strong), Obs → D (weak)
+        #   B → D,  B → I
+        #   D → I
+        with torch.no_grad():
+            prior = torch.tensor([
+                #  O     B     D     I
+                [0.0,  2.0,  0.5,  0.0],   # from Obs
+                [0.0,  0.0,  1.5,  2.0],   # from Belief
+                [0.0,  0.0,  0.0,  1.5],   # from Desire
+                [0.0,  0.0,  0.0,  0.0],   # from Intention
+            ])
+            self.causal_graph.raw_adjacency.copy_(prior)
+
+        # Structural equations for each endogenous BDI variable
+        self.eq_belief = StructuralEquationNetwork(
+            factor_dim, noise_dim, dropout,
+        )
+        self.eq_desire = StructuralEquationNetwork(
+            factor_dim, noise_dim, dropout,
+        )
+        self.eq_intention = StructuralEquationNetwork(
+            factor_dim, noise_dim, dropout,
+        )
+
+        # Noise encoder for abduction (counterfactual reasoning step 1)
+        # Infers exogenous noise ε from observed BDI values
+        self.noise_encoder = nn.Sequential(
+            nn.Linear(factor_dim * 3, factor_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(factor_dim * 2, noise_dim * 3),
+        )
+
+        # Parent aggregators: combine parent signals weighted by edge strength
+        self.parent_agg = nn.ModuleList([
+            nn.Linear(factor_dim * self.NUM_VARS, factor_dim)
+            for _ in range(self.NUM_VARS)
+        ])
+
+    # -- helpers ----------------------------------------------------------
+
+    def _aggregate_parents(
+        self,
+        var_idx: int,
+        variables: List[Tensor],
+        adjacency: Tensor,
+    ) -> Tensor:
+        """Weight parent representations by causal edge strength.
+
+        For variable j, computes  Σ_i A[i,j] · proj(X_i)  where A is the
+        adjacency matrix.
+        """
+        parent_weights = adjacency[:, var_idx]  # (NUM_VARS,)
+        weighted = [v * parent_weights[i] for i, v in enumerate(variables)]
+        stacked = torch.cat(weighted, dim=-1)   # (B, factor_dim * NUM_VARS)
+        return self.parent_agg[var_idx](stacked)
+
+    # -- Level 1: Associational (seeing) ---------------------------------
+
+    def forward(
+        self,
+        observation: Tensor,
+        bdi_init: "BDIState",
+    ) -> Tuple["BDIState", Dict[str, Tensor]]:
+        """Forward (associational) causal pass — P(BDI | Obs).
+
+        Parameters
+        ----------
+        observation : (batch, factor_dim) — encoded observation.
+        bdi_init : initial BDI from the MentalStateEncoder.
+
+        Returns
+        -------
+        bdi_causal : BDIState — causally-refined BDI triple.
+        info : dict with ``adjacency`` (Tensor) and ``dag_penalty`` (Tensor).
+        """
+        A = self.causal_graph()
+        variables = [
+            observation,
+            bdi_init.belief,
+            bdi_init.desire,
+            bdi_init.intention,
+        ]
+
+        # Causally-ordered generation following the graph:
+        # Belief ← parents(Obs, ...)
+        parent_b = self._aggregate_parents(self.VAR_BELIEF, variables, A)
+        belief = self.eq_belief(parent_b)
+        variables[self.VAR_BELIEF] = belief
+
+        # Desire ← parents(Obs, Belief, ...)
+        parent_d = self._aggregate_parents(self.VAR_DESIRE, variables, A)
+        desire = self.eq_desire(parent_d)
+        variables[self.VAR_DESIRE] = desire
+
+        # Intention ← parents(Belief, Desire, ...)
+        parent_i = self._aggregate_parents(self.VAR_INTENTION, variables, A)
+        intention = self.eq_intention(parent_i)
+
+        return BDIState(belief, desire, intention), {
+            "adjacency": A,
+            "dag_penalty": self.causal_graph.dag_penalty(),
+        }
+
+    # -- Level 2: Interventional (doing) — do-operator -------------------
+
+    def intervene(
+        self,
+        observation: Tensor,
+        bdi_init: "BDIState",
+        target: int,
+        value: Tensor,
+    ) -> "BDIState":
+        """Pearl's do(X_target = value).
+
+        Fixes a variable to a specific value and recomputes all downstream
+        variables through the structural equations, while **severing**
+        incoming causal edges to the target.
+
+        This answers questions like:
+        - "If I *set* the agent's belief to b, what would their intention be?"
+        - "If I *force* a desire, how does that change intentions?"
+
+        Parameters
+        ----------
+        target : VAR_BELIEF, VAR_DESIRE, or VAR_INTENTION.
+        value : (batch, factor_dim) — the intervention value.
+        """
+        A = self.causal_graph().clone()
+        A[:, target] = 0.0  # sever incoming edges (do-operator)
+
+        variables = [
+            observation,
+            bdi_init.belief,
+            bdi_init.desire,
+            bdi_init.intention,
+        ]
+        variables[target] = value
+
+        # Regenerate all downstream variables in causal order
+        for var_idx in range(self.VAR_BELIEF, self.NUM_VARS):
+            if var_idx == target:
+                continue  # skip the intervened variable
+            parent = self._aggregate_parents(var_idx, variables, A)
+            eq = [self.eq_belief, self.eq_desire, self.eq_intention][
+                var_idx - 1
+            ]
+            variables[var_idx] = eq(parent)
+
+        return BDIState(
+            variables[self.VAR_BELIEF],
+            variables[self.VAR_DESIRE],
+            variables[self.VAR_INTENTION],
+        )
+
+    # -- Level 3: Counterfactual (imagining) ------------------------------
+
+    def counterfactual(
+        self,
+        observation: Tensor,
+        bdi_observed: "BDIState",
+        cf_observation: Tensor,
+    ) -> "BDIState":
+        """Counterfactual reasoning via abduction-action-prediction (Pearl, 2009).
+
+        Three steps:
+        1. **Abduction** — infer exogenous noise ε from observed BDI.
+        2. **Action** — substitute the counterfactual observation.
+        3. **Prediction** — forward pass with inferred ε + new observation.
+
+        Answers: "If the observation had been Obs' instead of Obs,
+        what would the BDI states have been?"
+
+        This is the core of ToM counterfactual reasoning:
+        "If Sally *had* seen Anne move the ball, would she look in the
+        new location?"  (Answer: yes → the model needs counterfactual
+        capacity to distinguish this from the false-belief case.)
+        """
+        # Step 1: Abduction — infer exogenous noise from observed BDI
+        bdi_packed = bdi_observed.pack()
+        noise_all = self.noise_encoder(bdi_packed)
+        noise_b, noise_d, noise_i = noise_all.split(self.noise_dim, dim=-1)
+
+        # Step 2 & 3: Action + Prediction with counterfactual observation
+        A = self.causal_graph()
+        variables = [
+            cf_observation,
+            torch.zeros_like(bdi_observed.belief),
+            torch.zeros_like(bdi_observed.desire),
+            torch.zeros_like(bdi_observed.intention),
+        ]
+
+        parent_b = self._aggregate_parents(self.VAR_BELIEF, variables, A)
+        cf_belief = self.eq_belief(parent_b, noise_b)
+        variables[self.VAR_BELIEF] = cf_belief
+
+        parent_d = self._aggregate_parents(self.VAR_DESIRE, variables, A)
+        cf_desire = self.eq_desire(parent_d, noise_d)
+        variables[self.VAR_DESIRE] = cf_desire
+
+        parent_i = self._aggregate_parents(self.VAR_INTENTION, variables, A)
+        cf_intention = self.eq_intention(parent_i, noise_i)
+
+        return BDIState(cf_belief, cf_desire, cf_intention)
+
+
+class CausalHierarchyRouter(nn.Module):
+    """Routes mentalizing columns through Pearl's 3-level causal hierarchy.
+
+    Maps fractal mentalizing depth to causal reasoning mode:
+
+    - **Depth 0** (Direct perception) → Level 1: *Association*
+      P(Y|X) — observe and predict.
+
+    - **Depth 1** (Metacognition) → Level 2: *Intervention*
+      P(Y|do(X)) — what if I change my belief?
+
+    - **Depth 2+** (Other-modelling) → Level 3: *Counterfactual*
+      P(Y_{x'}|X,Y) — what would they believe if they'd seen X'?
+
+    This mapping reflects the cognitive development of causal reasoning:
+    children first learn associations, then interventions, and finally
+    counterfactual reasoning — paralleling ToM development stages
+    (Gopnik & Wellman, 2012).
+
+    Routing is **soft**: a learned gate blends all three levels with
+    depth-dependent priors biasing toward the theoretically appropriate
+    level.
+
+    Parameters
+    ----------
+    dim : int
+        Hidden dimensionality.
+    max_depth : int
+        Maximum mentalizing depth.
+    """
+
+    def __init__(self, dim: int, max_depth: int):
+        super().__init__()
+        self.max_depth = max(max_depth, 1)
+        self.num_levels = 3  # association, intervention, counterfactual
+        self.router = nn.Sequential(
+            nn.Linear(dim, dim // 2),
+            nn.GELU(),
+            nn.Linear(dim // 2, self.num_levels),
+        )
+        self.register_buffer("_dummy", torch.empty(0))
+
+    def _depth_prior(self, depth_index: int) -> Tensor:
+        """Soft prior over causal levels for mentalizing depth *k*."""
+        p = torch.zeros(self.num_levels, device=self._dummy.device)
+        if depth_index == 0:
+            p[0], p[1], p[2] = 2.0, 0.5, 0.0   # association-dominated
+        elif depth_index == 1:
+            p[0], p[1], p[2] = 0.5, 2.0, 0.5   # intervention-dominated
+        else:
+            ratio = min(depth_index / self.max_depth, 1.0)
+            p[0] = 0.2
+            p[1] = 1.0 - 0.5 * ratio
+            p[2] = 1.0 + ratio                   # counterfactual-dominated
+        return p
+
+    def forward(self, h: Tensor, depth_index: int) -> Tensor:
+        """
+        Returns
+        -------
+        (batch, 3) — soft weights over [association, intervention, counterfactual].
+        """
+        logits = self.router(h) + self._depth_prior(depth_index)
+        return F.softmax(logits, dim=-1)
+
+
+class CausalDiscoveryModule(nn.Module):
+    """Discovers cross-depth causal structure from BDI representations.
+
+    Scores potential causal edges *between* mentalizing depths using a
+    pairwise neural scorer, enforcing:
+    1. A **depth-ordering prior** — shallower depths causally precede
+       deeper ones (reflecting cognitive development).
+    2. A **DAG constraint** — the discovered cross-depth graph must be
+       acyclic.
+    3. A **sparsity prior** — only the most informative causal links
+       are retained.
+
+    This enables the network to learn *which* mentalizing levels
+    causally influence others — e.g., discovering that depth-0 beliefs
+    structurally inform depth-2 other-modelling.
+
+    The discovered structure can be read off for scientific interpretation:
+    a strong edge from column 1 → column 3 would mean "metacognitive
+    beliefs causally drive second-order ToM".
+
+    Parameters
+    ----------
+    factor_dim : int
+        BDI factor dimensionality.
+    max_depth : int
+        Maximum mentalizing depth.
+    dropout : float
+        Dropout rate.
+    """
+
+    def __init__(
+        self,
+        factor_dim: int,
+        max_depth: int,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.max_depth = max_depth
+
+        self.edge_scorer = nn.Sequential(
+            nn.Linear(factor_dim * 2, factor_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(factor_dim, 1),
+        )
+
+        # Depth-ordering prior: shallower → deeper preferred
+        self.depth_bias = nn.Parameter(
+            torch.zeros(max_depth + 1, max_depth + 1),
+        )
+        with torch.no_grad():
+            for i in range(max_depth + 1):
+                for j in range(max_depth + 1):
+                    if i < j:
+                        self.depth_bias[i, j] = 1.0   # forward causation
+                    elif i > j:
+                        self.depth_bias[i, j] = -2.0   # discourage backward
+
+    def discover(
+        self,
+        bdi_per_depth: Dict[int, "BDIState"],
+        observation: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """Discover cross-depth causal adjacency.
+
+        Parameters
+        ----------
+        bdi_per_depth : dict mapping depth index → BDIState.
+        observation : (batch, factor_dim).
+
+        Returns
+        -------
+        cross_adj : (K+1, K+1) — discovered cross-depth adjacency.
+        penalty : scalar — DAG + sparsity penalty.
+        """
+        depth_reps = []
+        for k in sorted(bdi_per_depth.keys()):
+            bdi = bdi_per_depth[k]
+            rep = (bdi.belief + bdi.desire + bdi.intention) / 3.0
+            depth_reps.append(rep)
+
+        K = len(depth_reps)
+        device = observation.device
+
+        adj = torch.zeros(K, K, device=device)
+        for i in range(K):
+            for j in range(K):
+                if i == j:
+                    continue
+                pair = torch.cat([
+                    depth_reps[i].mean(0, keepdim=True),
+                    depth_reps[j].mean(0, keepdim=True),
+                ], dim=-1)
+                score = self.edge_scorer(pair).squeeze()
+                bias = self.depth_bias[i, j] if (
+                    i < self.depth_bias.shape[0] and
+                    j < self.depth_bias.shape[1]
+                ) else 0.0
+                adj[i, j] = torch.sigmoid(score + bias)
+
+        # DAG penalty (NOTEARS)
+        M = adj * adj
+        orig_device = M.device
+        expm = torch.matrix_exp(M.cpu()).to(orig_device)
+        dag_pen = torch.trace(expm) - K
+        sparsity = adj.sum()
+        penalty = dag_pen + 0.01 * sparsity
+
+        return adj, penalty
+
+
+# ╔══════════════════════════════════════════════════════════════════════╗
 # ║                 ATTENTION-WEIGHTED COLUMN JOIN                     ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
@@ -748,12 +1399,33 @@ class InterpretabilityReport:
         Per-column epistemic uncertainty σ_k (batch, 1).
     belief_revision_gate : Tensor | None
         Gate values from the BeliefRevisionModule (batch, dim).
+    causal_adjacency : Tensor | None
+        Learned BDI causal graph adjacency matrix (NUM_VARS, NUM_VARS).
+        Entry [i,j] indicates causal influence strength from variable i
+        to variable j, where 0=Obs, 1=Belief, 2=Desire, 3=Intention.
+    causal_hierarchy_weights : dict[int, Tensor] | None
+        Per-column soft weights over Pearl's 3 causal levels
+        (association, intervention, counterfactual). Shape (batch, 3).
+    cross_depth_adjacency : Tensor | None
+        Discovered cross-depth causal structure (K+1, K+1).
+        Entry [i,j] indicates causal influence from column i to column j.
+    dag_penalty : Tensor | None
+        NOTEARS DAG constraint value (0 = perfect DAG).  Differentiable.
+    counterfactual_distances : dict[int, float] | None
+        Per-column L2 distance between factual and counterfactual BDI.
+        Larger values at deeper columns indicate richer counterfactual
+        reasoning.
     """
 
     depth_weights: Tensor
     bdi_states: Dict[int, List[BDIState]] = field(default_factory=dict)
     column_uncertainties: Dict[int, Tensor] = field(default_factory=dict)
     belief_revision_gate: Optional[Tensor] = None
+    causal_adjacency: Optional[Tensor] = None
+    causal_hierarchy_weights: Optional[Dict[int, Tensor]] = None
+    cross_depth_adjacency: Optional[Tensor] = None
+    dag_penalty: Optional[Tensor] = None
+    counterfactual_distances: Optional[Dict[int, float]] = None
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
@@ -816,16 +1488,38 @@ class FracToMNet(nn.Module):
     Combines all sub-modules into a single differentiable forward pass:
 
         Input → MentalStateEncoder
+              → StructuralCausalModel (BDI causal refinement)
               → K+1 FractalMentalizingColumns (fractal, self-similar)
+              → Causal Hierarchy Routing (association/intervention/counterfactual)
               → EpistemicGating per column
+              → Cross-Depth Causal Discovery
               → Attention-weighted MentalizingJoin
               → BeliefRevisionModule
               → Task Head
 
     The architecture is **interpretable by construction**: every internal
     tensor has a clear cognitive-science interpretation (BDI states,
-    mentalizing depth weights, epistemic uncertainty), and these can be
+    mentalizing depth weights, epistemic uncertainty, causal graph
+    structure, Pearl hierarchy level weights), and these can be
     inspected via the ``InterpretabilityReport``.
+
+    Causal Integration
+    ------------------
+    The Structural Causal Model (SCM) provides three capabilities:
+
+    1. **Causal Discovery** — the BDI causal graph and cross-depth
+       causal structure are *learned* end-to-end via differentiable
+       structure learning (NOTEARS; Zheng et al., 2018).
+
+    2. **Pearl's Causal Hierarchy** — mentalizing columns are routed
+       through three causal reasoning levels:
+       - Depth 0 → Association (seeing): P(Y|X)
+       - Depth 1 → Intervention (doing): P(Y|do(X))
+       - Depth 2+ → Counterfactual (imagining): P(Y_{x'}|X,Y)
+
+    3. **Counterfactual ToM** — the network can answer questions like
+       "If the agent *had* seen X, what would they believe?" via
+       abduction-action-prediction (Pearl, 2009).
 
     Parameters
     ----------
@@ -853,6 +1547,12 @@ class FracToMNet(nn.Module):
         Base column drop-path probability (see FractalDropPath).
     num_classes : int | None
         If set, a ClassificationHead is appended.
+    causal_model : bool
+        If True (default), enable the Structural Causal Model for
+        BDI causal reasoning, Pearl hierarchy routing, counterfactual
+        generation, and cross-depth causal discovery.
+    causal_noise_dim : int
+        Dimensionality of exogenous noise in structural equations.
     """
 
     def __init__(
@@ -867,6 +1567,8 @@ class FracToMNet(nn.Module):
         dropout: float = 0.1,
         drop_path: float = 0.15,
         num_classes: Optional[int] = None,
+        causal_model: bool = True,
+        causal_noise_dim: int = 16,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -904,6 +1606,34 @@ class FracToMNet(nn.Module):
             EpistemicGate(hidden_dim)
             for _ in range(mentalizing_depth + 1)
         ])
+
+        # --- Structural Causal Model (SCM) ---
+        self.use_causal = causal_model
+        if causal_model:
+            self.scm = StructuralCausalModel(
+                factor_dim=self.factor_dim,
+                noise_dim=causal_noise_dim,
+                dropout=dropout,
+            )
+            self.causal_router = CausalHierarchyRouter(
+                dim=hidden_dim,
+                max_depth=mentalizing_depth,
+            )
+            self.causal_discovery = CausalDiscoveryModule(
+                factor_dim=self.factor_dim,
+                max_depth=mentalizing_depth,
+                dropout=dropout,
+            )
+            # Project hidden_dim → factor_dim for SCM observation input
+            self.obs_to_factor = nn.Linear(hidden_dim, self.factor_dim)
+            # Project causal BDI back to hidden_dim for column enrichment
+            self.causal_to_hidden = nn.Linear(
+                self.factor_dim * 3, hidden_dim,
+            )
+            # Learned counterfactual observation transform
+            self.cf_obs_transform = nn.Linear(
+                self.factor_dim, self.factor_dim, bias=False,
+            )
 
         # --- Drop-path ---
         self.drop_path = FractalDropPath(
@@ -984,6 +1714,80 @@ class FracToMNet(nn.Module):
             column_outputs.append(h_col)
             all_bdis[k] = bdis_col
 
+        # 2.5) Causal processing via Structural Causal Model
+        causal_info: Dict = {}
+        if self.use_causal:
+            obs_factor = self.obs_to_factor(h_input)  # (B, factor_dim)
+            causal_hierarchy_weights: Dict[int, Tensor] = {}
+            cf_distances: Dict[int, float] = {}
+            causal_adj: Optional[Tensor] = None
+            dag_pen_total = torch.tensor(0.0, device=x.device)
+
+            for k in range(len(self.columns)):
+                # Get this column's last BDI
+                bdi_k = all_bdis[k][-1]
+
+                # Route through Pearl's causal hierarchy
+                level_weights = self.causal_router(
+                    column_outputs[k], depth_index=k,
+                )  # (B, 3)
+                causal_hierarchy_weights[k] = level_weights
+
+                # Level 1: Association (standard SCM forward)
+                bdi_assoc, scm_info = self.scm(obs_factor, bdi_k)
+                causal_adj = scm_info["adjacency"]
+                dag_pen_total = dag_pen_total + scm_info["dag_penalty"]
+
+                # Level 2: Intervention — do(Belief = belief_k)
+                bdi_interv = self.scm.intervene(
+                    obs_factor, bdi_k,
+                    target=StructuralCausalModel.VAR_BELIEF,
+                    value=bdi_k.belief,
+                )
+
+                # Level 3: Counterfactual — "what if obs were different?"
+                cf_obs = self.cf_obs_transform(obs_factor)
+                bdi_cf = self.scm.counterfactual(
+                    obs_factor, bdi_k, cf_obs,
+                )
+
+                # Counterfactual distance (interpretability metric)
+                with torch.no_grad():
+                    cf_dist_val = (
+                        bdi_cf.pack() - bdi_k.pack()
+                    ).norm(dim=-1).mean().item()
+                cf_distances[k] = cf_dist_val
+
+                # Blend all three levels weighted by router
+                packed_assoc = bdi_assoc.pack()
+                packed_interv = bdi_interv.pack()
+                packed_cf = bdi_cf.pack()
+                w = level_weights  # (B, 3)
+                blended_bdi = (
+                    w[:, 0:1] * packed_assoc
+                    + w[:, 1:2] * packed_interv
+                    + w[:, 2:3] * packed_cf
+                )  # (B, 3 * factor_dim)
+
+                # Enrich column output with causal BDI information
+                causal_h = self.causal_to_hidden(blended_bdi)
+                column_outputs[k] = column_outputs[k] + causal_h
+
+            # Cross-depth causal discovery
+            last_bdis = {k: all_bdis[k][-1] for k in all_bdis}
+            cross_adj, cross_pen = self.causal_discovery.discover(
+                last_bdis, obs_factor,
+            )
+            dag_pen_total = dag_pen_total + cross_pen
+
+            causal_info = {
+                "causal_adjacency": causal_adj,
+                "causal_hierarchy_weights": causal_hierarchy_weights,
+                "cross_depth_adjacency": cross_adj,
+                "dag_penalty": dag_pen_total,
+                "counterfactual_distances": cf_distances,
+            }
+
         # 3) Attention-weighted join across columns
         joined, alpha = self.join(column_outputs, h_input)
 
@@ -998,6 +1802,17 @@ class FracToMNet(nn.Module):
                 depth_weights=alpha,
                 bdi_states=all_bdis,
                 column_uncertainties=all_sigmas,
+                causal_adjacency=causal_info.get("causal_adjacency"),
+                causal_hierarchy_weights=causal_info.get(
+                    "causal_hierarchy_weights"
+                ),
+                cross_depth_adjacency=causal_info.get(
+                    "cross_depth_adjacency"
+                ),
+                dag_penalty=causal_info.get("dag_penalty"),
+                counterfactual_distances=causal_info.get(
+                    "counterfactual_distances"
+                ),
             )
             return out, report
         return out
@@ -1031,6 +1846,13 @@ class FracToMLoss(nn.Module):
        predictions on incorrect examples (ECE-inspired).
     4. **Depth regularisation** — entropy bonus on α to encourage
        exploring multiple mentalizing depths.
+    5. **DAG acyclicity penalty** — NOTEARS constraint ensuring the
+       learned BDI causal graph is a valid DAG.
+    6. **Causal sparsity** — encourages sparse causal graphs (Occam's
+       razor for causal structure).
+    7. **Counterfactual ordering** — deeper mentalizing columns should
+       exhibit larger counterfactual distances (richer counterfactual
+       reasoning at higher ToM depths).
 
     λ coefficients control the balance.
     """
@@ -1041,12 +1863,18 @@ class FracToMLoss(nn.Module):
         lambda_bdi: float = 0.01,
         lambda_uncertainty: float = 0.005,
         lambda_depth_entropy: float = 0.01,
+        lambda_dag: float = 0.1,
+        lambda_causal_sparsity: float = 0.005,
+        lambda_counterfactual: float = 0.01,
     ):
         super().__init__()
         self.task_loss_fn = task_loss_fn or nn.CrossEntropyLoss()
         self.lambda_bdi = lambda_bdi
         self.lambda_uncertainty = lambda_uncertainty
         self.lambda_depth_entropy = lambda_depth_entropy
+        self.lambda_dag = lambda_dag
+        self.lambda_causal_sparsity = lambda_causal_sparsity
+        self.lambda_counterfactual = lambda_counterfactual
 
     def forward(
         self,
@@ -1101,11 +1929,43 @@ class FracToMLoss(nn.Module):
             + self.lambda_depth_entropy * depth_reg
         )
 
+        # 5) DAG acyclicity penalty (NOTEARS)
+        dag_loss = torch.tensor(0.0, device=logits.device)
+        if report.dag_penalty is not None:
+            dag_loss = report.dag_penalty
+        loss = loss + self.lambda_dag * dag_loss
+
+        # 6) Causal graph sparsity — encourage Occam's razor
+        causal_sparse = torch.tensor(0.0, device=logits.device)
+        if report.causal_adjacency is not None:
+            causal_sparse = report.causal_adjacency.sum()
+        if report.cross_depth_adjacency is not None:
+            causal_sparse = causal_sparse + report.cross_depth_adjacency.sum()
+        loss = loss + self.lambda_causal_sparsity * causal_sparse
+
+        # 7) Counterfactual ordering — deeper columns should have larger
+        #    counterfactual distances (they model further-removed scenarios)
+        cf_loss = torch.tensor(0.0, device=logits.device)
+        if report.counterfactual_distances:
+            dists = report.counterfactual_distances
+            depths = sorted(dists.keys())
+            for i in range(len(depths) - 1):
+                # penalise when shallower column has LARGER cf distance
+                diff = dists[depths[i]] - dists[depths[i + 1]]
+                if diff > 0:
+                    cf_loss = cf_loss + diff
+            if len(depths) > 1:
+                cf_loss = cf_loss / (len(depths) - 1)
+        loss = loss + self.lambda_counterfactual * cf_loss
+
         breakdown = {
             "task": task.item(),
             "bdi_consistency": bdi_loss.item(),
             "uncertainty_cal": unc_loss.item(),
             "depth_entropy_reg": depth_reg.item(),
+            "dag_penalty": dag_loss.item() if isinstance(dag_loss, Tensor) else dag_loss,
+            "causal_sparsity": causal_sparse.item() if isinstance(causal_sparse, Tensor) else causal_sparse,
+            "cf_ordering": cf_loss.item() if isinstance(cf_loss, Tensor) else cf_loss,
             "total": loss.item(),
         }
         return loss, breakdown
@@ -1152,6 +2012,63 @@ def analyse_mentalizing_depth(
             s = sigma.mean().item()
             lines.append(f"  Column {k}: σ = {s:.4f}")
 
+    # --- Causal analysis ---
+    if report.causal_adjacency is not None:
+        lines.append("")
+        lines.append("Learned BDI Causal Graph (adjacency matrix):")
+        var_names = ["Obs", "Belief", "Desire", "Intention"]
+        A = report.causal_adjacency.detach()
+        header = "         " + "  ".join(f"{n:>9s}" for n in var_names)
+        lines.append(header)
+        for i, name in enumerate(var_names):
+            vals = "  ".join(f"{A[i, j]:.4f}   " for j in range(A.shape[1]))
+            lines.append(f"  {name:9s} {vals}")
+        lines.append("")
+        lines.append("  Key causal edges (strength > 0.5):")
+        for i in range(A.shape[0]):
+            for j in range(A.shape[1]):
+                if A[i, j] > 0.5:
+                    lines.append(
+                        f"    {var_names[i]} → {var_names[j]}:  "
+                        f"{A[i, j]:.3f}"
+                    )
+
+    if report.dag_penalty is not None:
+        dag_val = report.dag_penalty
+        if isinstance(dag_val, Tensor):
+            dag_val = dag_val.item()
+        lines.append(f"  DAG penalty (0 = perfect DAG): {dag_val:.6f}")
+
+    if report.causal_hierarchy_weights:
+        lines.append("")
+        lines.append("Pearl's Causal Hierarchy — per-column level weights:")
+        level_names = ["Association", "Intervention", "Counterfactual"]
+        for k in sorted(report.causal_hierarchy_weights.keys()):
+            w = report.causal_hierarchy_weights[k].mean(0)  # avg over batch
+            parts = "  ".join(
+                f"{level_names[i]}: {w[i]:.3f}" for i in range(3)
+            )
+            lines.append(f"  Column {k}: {parts}")
+
+    if report.cross_depth_adjacency is not None:
+        lines.append("")
+        lines.append("Cross-Depth Causal Structure:")
+        cd = report.cross_depth_adjacency.detach()
+        K = cd.shape[0]
+        for i in range(K):
+            for j in range(K):
+                if cd[i, j] > 0.3:
+                    lines.append(
+                        f"  Column {i} → Column {j}: {cd[i, j]:.3f}"
+                    )
+
+    if report.counterfactual_distances:
+        lines.append("")
+        lines.append("Counterfactual distances per column:")
+        for k, d in sorted(report.counterfactual_distances.items()):
+            bar = "█" * int(d * 10)
+            lines.append(f"  Column {k}: {d:.4f}  {bar}")
+
     return "\n".join(lines)
 
 
@@ -1171,6 +2088,69 @@ def extract_bdi_activations(
             "desire": last.desire.detach(),
             "intention": last.intention.detach(),
         }
+    return result
+
+
+def extract_causal_graph(
+    report: InterpretabilityReport,
+) -> Dict[str, object]:
+    """Extract causal structure information for downstream analysis.
+
+    Returns a dict with:
+    - ``bdi_adjacency``: (4, 4) Tensor — BDI causal graph adjacency.
+      Rows/cols: [Obs, Belief, Desire, Intention].
+    - ``bdi_edges``: list of (source, target, weight) tuples for edges > 0.3.
+    - ``cross_depth_adjacency``: (K+1, K+1) Tensor — cross-depth causal graph.
+    - ``cross_depth_edges``: list of (src_col, tgt_col, weight) tuples.
+    - ``hierarchy_weights``: dict[int → (3,) Tensor] — per-column causal level.
+    - ``counterfactual_distances``: dict[int → float].
+    - ``dag_penalty``: float — 0 means perfect DAG.
+    """
+    var_names = ["Obs", "Belief", "Desire", "Intention"]
+    result: Dict[str, object] = {}
+
+    if report.causal_adjacency is not None:
+        A = report.causal_adjacency.detach()
+        result["bdi_adjacency"] = A
+        edges = []
+        for i in range(A.shape[0]):
+            for j in range(A.shape[1]):
+                if A[i, j] > 0.3:
+                    edges.append((var_names[i], var_names[j], A[i, j].item()))
+        result["bdi_edges"] = edges
+    else:
+        result["bdi_adjacency"] = None
+        result["bdi_edges"] = []
+
+    if report.cross_depth_adjacency is not None:
+        cd = report.cross_depth_adjacency.detach()
+        result["cross_depth_adjacency"] = cd
+        edges = []
+        for i in range(cd.shape[0]):
+            for j in range(cd.shape[1]):
+                if cd[i, j] > 0.3:
+                    edges.append((i, j, cd[i, j].item()))
+        result["cross_depth_edges"] = edges
+    else:
+        result["cross_depth_adjacency"] = None
+        result["cross_depth_edges"] = []
+
+    if report.causal_hierarchy_weights is not None:
+        result["hierarchy_weights"] = {
+            k: v.mean(0).detach()
+            for k, v in report.causal_hierarchy_weights.items()
+        }
+    else:
+        result["hierarchy_weights"] = {}
+
+    result["counterfactual_distances"] = report.counterfactual_distances or {}
+
+    if report.dag_penalty is not None:
+        dag_val = report.dag_penalty
+        result["dag_penalty"] = dag_val.item() if isinstance(dag_val, Tensor) else dag_val
+    else:
+        result["dag_penalty"] = None
+
     return result
 
 
@@ -1352,6 +2332,8 @@ def demo_classification() -> None:
         dropout=0.1,
         drop_path=0.1,
         num_classes=NUM_CLASSES,
+        causal_model=True,     # enable SCM integration
+        causal_noise_dim=16,
     ).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -1363,6 +2345,9 @@ def demo_classification() -> None:
         lambda_bdi=0.01,
         lambda_uncertainty=0.005,
         lambda_depth_entropy=0.01,
+        lambda_dag=0.1,
+        lambda_causal_sparsity=0.005,
+        lambda_counterfactual=0.01,
     )
     optimiser = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=100)
@@ -1430,6 +2415,23 @@ def demo_classification() -> None:
             f"  Column {k} ({_depth_label(k):20s}): "
             f"‖B‖={b_norm:.3f}  ‖D‖={d_norm:.3f}  ‖I‖={i_norm:.3f}"
         )
+
+    # Show causal graph analysis
+    causal_graph = extract_causal_graph(report_final)
+    if causal_graph["bdi_edges"]:
+        print("\nDiscovered BDI causal edges:")
+        for src, tgt, w in causal_graph["bdi_edges"]:
+            print(f"  {src} → {tgt}:  {w:.3f}")
+    if causal_graph["cross_depth_edges"]:
+        print("\nDiscovered cross-depth causal edges:")
+        for src, tgt, w in causal_graph["cross_depth_edges"]:
+            print(f"  Column {src} → Column {tgt}:  {w:.3f}")
+    if causal_graph["hierarchy_weights"]:
+        print("\nPearl's Causal Hierarchy weights per column:")
+        level_names = ["Assoc", "Interv", "CF"]
+        for k, w in sorted(causal_graph["hierarchy_weights"].items()):
+            parts = "  ".join(f"{level_names[i]}: {w[i]:.3f}" for i in range(3))
+            print(f"  Column {k}: {parts}")
 
     print(f"\n{'=' * 70}")
     print(f"Final test accuracy: {best_acc:.3f}")

@@ -82,7 +82,10 @@ import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
-from nn import FracToMLoss, FracToMNet, analyse_mentalizing_depth
+from nn import (
+    FracToMLoss, FracToMNet, analyse_mentalizing_depth,
+    extract_causal_graph, extract_bdi_activations,
+)
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
@@ -629,7 +632,9 @@ def evaluate(
     count = 0
     breakdown_acc: Dict[str, float] = {
         "task": 0.0, "bdi_consistency": 0.0,
-        "uncertainty_cal": 0.0, "depth_entropy_reg": 0.0, "total": 0.0,
+        "uncertainty_cal": 0.0, "depth_entropy_reg": 0.0,
+        "dag_penalty": 0.0, "causal_sparsity": 0.0,
+        "cf_ordering": 0.0, "total": 0.0,
     }
     all_preds: List[Tensor] = []
     all_tgts:  List[Tensor] = []
@@ -756,6 +761,96 @@ def save_tom_hierarchy_visualization(
     print(f"Saved ToM hierarchy visualizations to: {out.resolve()}")
 
 
+def save_causal_graph_visualization(
+    report,
+    output_dir: str,
+) -> None:
+    """Save causal graph visualizations: adjacency heatmap + Pearl hierarchy."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("Causal visualization skipped: pip install matplotlib")
+        return
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    cg = extract_causal_graph(report)
+
+    # --- 1. BDI adjacency heatmap ---
+    if cg["bdi_adjacency"] is not None:
+        adj = cg["bdi_adjacency"].cpu().numpy()
+        bdi_labels = ["Observation", "Belief", "Desire", "Intention"]
+        n_bdi = adj.shape[0]
+        labels = bdi_labels[:n_bdi] if n_bdi <= len(bdi_labels) else [
+            f"V{i}" for i in range(n_bdi)
+        ]
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+        im = ax.imshow(adj, cmap="YlOrRd", vmin=0.0, vmax=1.0)
+        ax.set_xticks(range(n_bdi))
+        ax.set_yticks(range(n_bdi))
+        ax.set_xticklabels(labels, rotation=45, ha="right")
+        ax.set_yticklabels(labels)
+        for i in range(n_bdi):
+            for j in range(n_bdi):
+                ax.text(j, i, f"{adj[i, j]:.2f}", ha="center", va="center",
+                        fontsize=9, color="white" if adj[i, j] > 0.5 else "black")
+        ax.set_title("BDI Causal Adjacency (SCM)")
+        ax.set_xlabel("Effect")
+        ax.set_ylabel("Cause")
+        fig.colorbar(im, ax=ax, shrink=0.75)
+        plt.tight_layout()
+        fig.savefig(out / "causal_bdi_adjacency.png", dpi=160)
+        plt.close(fig)
+
+    # --- 2. Pearl's Causal Hierarchy bar chart ---
+    if cg["hierarchy_weights"]:
+        cols = sorted(cg["hierarchy_weights"].keys())
+        levels = ["Association", "Intervention", "Counterfactual"]
+        weights_arr = torch.stack([cg["hierarchy_weights"][c] for c in cols]).cpu().numpy()
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        x = range(len(cols))
+        width = 0.25
+        for i, lvl in enumerate(levels):
+            ax.bar([xi + i * width for xi in x], weights_arr[:, i],
+                   width=width, label=lvl)
+        ax.set_xticks([xi + width for xi in x])
+        ax.set_xticklabels([f"Col {c}" for c in cols])
+        ax.set_ylabel("Weight")
+        ax.set_title("Pearl's Causal Hierarchy Routing per ToM Depth")
+        ax.legend()
+        plt.tight_layout()
+        fig.savefig(out / "causal_pearl_hierarchy.png", dpi=160)
+        plt.close(fig)
+
+    # --- 3. Cross-depth adjacency ---
+    if cg["cross_depth_adjacency"] is not None:
+        cross = cg["cross_depth_adjacency"].cpu().numpy()
+        n_cols = cross.shape[0]
+        fig, ax = plt.subplots(figsize=(5.5, 4.8))
+        im = ax.imshow(cross, cmap="Blues", vmin=0.0, vmax=1.0)
+        ax.set_xticks(range(n_cols))
+        ax.set_yticks(range(n_cols))
+        ax.set_xticklabels([f"Col {i}" for i in range(n_cols)])
+        ax.set_yticklabels([f"Col {i}" for i in range(n_cols)])
+        for i in range(n_cols):
+            for j in range(n_cols):
+                ax.text(j, i, f"{cross[i, j]:.2f}", ha="center", va="center",
+                        fontsize=9, color="white" if cross[i, j] > 0.5 else "black")
+        ax.set_title("Cross-Depth Causal Structure")
+        ax.set_xlabel("Effect depth")
+        ax.set_ylabel("Cause depth")
+        fig.colorbar(im, ax=ax, shrink=0.75)
+        plt.tight_layout()
+        fig.savefig(out / "causal_cross_depth.png", dpi=160)
+        plt.close(fig)
+
+    print(f"Saved causal graph visualizations to: {out.resolve()}")
+
+
 # ╔══════════════════════════════════════════════════════════════════════╗
 # ║                      TRAINING LOOP                                 ║
 # ╚══════════════════════════════════════════════════════════════════════╝
@@ -825,6 +920,8 @@ def train(args: argparse.Namespace) -> None:
         dropout=args.dropout,
         drop_path=args.drop_path,
         num_classes=NUM_CLASSES,
+        causal_model=args.causal_model,
+        causal_noise_dim=args.causal_noise_dim,
     ).to(device)
 
     criterion = FracToMLoss(
@@ -832,6 +929,9 @@ def train(args: argparse.Namespace) -> None:
         lambda_bdi=args.lambda_bdi,
         lambda_uncertainty=args.lambda_uncertainty,
         lambda_depth_entropy=args.lambda_depth_entropy,
+        lambda_dag=args.lambda_dag,
+        lambda_causal_sparsity=args.lambda_causal_sparsity,
+        lambda_counterfactual=args.lambda_counterfactual,
     )
 
     optimizer = torch.optim.AdamW(
@@ -843,6 +943,16 @@ def train(args: argparse.Namespace) -> None:
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {total_params:,}")
+    print(f"Causal model: {args.causal_model}")
+    if args.causal_model:
+        causal_params = (
+            sum(p.numel() for p in model.scm.parameters())
+            + sum(p.numel() for p in model.causal_router.parameters())
+            + sum(p.numel() for p in model.causal_discovery.parameters())
+        )
+        print(f"  SCM params: {causal_params:,}")
+        print(f"  Causal noise dim: {args.causal_noise_dim}")
+        print(f"  λ_dag={args.lambda_dag}  λ_sparse={args.lambda_causal_sparsity}  λ_cf={args.lambda_counterfactual}")
     print("Starting training...\n")
 
     # ─── train loop ───────────────────────────────────────────────────
@@ -885,11 +995,19 @@ def train(args: argparse.Namespace) -> None:
                 f"train_loss={tr_loss:.4f} train_acc={tr_acc:.3f} | "
                 f"test_loss={te_loss:.4f} test_acc={te_acc:.3f} best={best_acc:.3f}"
             )
+            causal_parts = ""
+            if args.causal_model:
+                causal_parts = (
+                    f" dag={bd.get('dag_penalty', 0):.4f}"
+                    f" sparse={bd.get('causal_sparsity', 0):.4f}"
+                    f" cf={bd.get('cf_ordering', 0):.4f}"
+                )
             print(
                 f"          loss → task={bd['task']:.4f} "
                 f"bdi={bd['bdi_consistency']:.4f} "
                 f"unc={bd['uncertainty_cal']:.4f} "
                 f"depth={bd['depth_entropy_reg']:.4f}"
+                f"{causal_parts}"
             )
 
     print("\nTraining complete.")
@@ -915,6 +1033,7 @@ def train(args: argparse.Namespace) -> None:
     model.eval()
     all_dw: List[Tensor] = []
     sigma_acc: Dict[int, List[Tensor]] = {}
+    last_report = None
 
     with torch.no_grad():
         for xb, _ in test_loader:
@@ -923,22 +1042,82 @@ def train(args: argparse.Namespace) -> None:
             all_dw.append(report.depth_weights.cpu())
             for k, s in report.column_uncertainties.items():
                 sigma_acc.setdefault(k, []).append(s.cpu())
+            last_report = report
 
     dw = torch.cat(all_dw, dim=0)
-    tmp = type("R", (), {})()
-    tmp.depth_weights = dw
-    tmp.column_uncertainties = {k: torch.cat(v) for k, v in sigma_acc.items()}
-    tmp.bdi_states = {}
+
+    # Build a report-like object for analyse_mentalizing_depth that
+    # contains the causal fields from the last batch for display.
+    from nn import InterpretabilityReport
+    summary_report = InterpretabilityReport(
+        depth_weights=dw,
+        bdi_states={},
+        column_uncertainties={k: torch.cat(v) for k, v in sigma_acc.items()},
+        causal_adjacency=(
+            last_report.causal_adjacency if last_report else None
+        ),
+        causal_hierarchy_weights=(
+            last_report.causal_hierarchy_weights if last_report else None
+        ),
+        cross_depth_adjacency=(
+            last_report.cross_depth_adjacency if last_report else None
+        ),
+        dag_penalty=(
+            last_report.dag_penalty if last_report else None
+        ),
+        counterfactual_distances=(
+            last_report.counterfactual_distances if last_report else None
+        ),
+    )
 
     print("\n" + "=" * 90)
-    print("Mentalizing Interpretability Summary")
+    print("Mentalizing & Causal Interpretability Summary")
     print("=" * 90)
-    print(analyse_mentalizing_depth(tmp))
+    print(analyse_mentalizing_depth(summary_report))
+
+    # Causal graph analysis
+    if args.causal_model and last_report is not None:
+        cg = extract_causal_graph(last_report)
+        print("\n" + "-" * 60)
+        print("Causal Graph Summary (last test batch)")
+        print("-" * 60)
+        if cg["bdi_edges"]:
+            print("BDI causal edges (strength > 0.3):")
+            for src, tgt, w in cg["bdi_edges"]:
+                arrow = "━━▶" if w > 0.7 else "──▶" if w > 0.5 else "╌╌▶"
+                print(f"  {src:>9s} {arrow} {tgt:<9s}  ({w:.3f})")
+        if cg["cross_depth_edges"]:
+            print("\nCross-depth causal edges:")
+            for src, tgt, w in cg["cross_depth_edges"]:
+                print(f"  Column {src} → Column {tgt}:  {w:.3f}")
+        if cg["hierarchy_weights"]:
+            print("\nPearl's Causal Hierarchy per column:")
+            level_names = ["Association", "Intervention", "Counterfactual"]
+            for k, w in sorted(cg["hierarchy_weights"].items()):
+                dominant = level_names[w.argmax().item()]
+                parts = "  ".join(
+                    f"{level_names[i][:5]}: {w[i]:.3f}" for i in range(3)
+                )
+                print(f"  Column {k}: {parts}  [{dominant}]")
+        if cg["counterfactual_distances"]:
+            print("\nCounterfactual distances (larger = richer CF reasoning):")
+            for k, d in sorted(cg["counterfactual_distances"].items()):
+                bar = "█" * int(d * 5)
+                print(f"  Column {k}: {d:.4f}  {bar}")
+        dag = cg.get("dag_penalty")
+        if dag is not None:
+            print(f"\nDAG penalty (0 = valid DAG): {dag:.6f}")
 
     save_tom_hierarchy_visualization(
-        dw, tmp.column_uncertainties,
+        dw, summary_report.column_uncertainties,
         args.viz_dir, args.viz_heatmap_samples,
     )
+
+    # Save causal graph visualization
+    if args.causal_model and last_report is not None:
+        save_causal_graph_visualization(
+            last_report, args.viz_dir,
+        )
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
@@ -978,6 +1157,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--lambda-bdi",            type=float, default=0.01)
     p.add_argument("--lambda-uncertainty",    type=float, default=0.005)
     p.add_argument("--lambda-depth-entropy",  type=float, default=0.01)
+    p.add_argument("--lambda-dag",            type=float, default=0.1)
+    p.add_argument("--lambda-causal-sparsity",type=float, default=0.005)
+    p.add_argument("--lambda-counterfactual", type=float, default=0.01)
+
+    # causal model
+    p.add_argument("--causal-model",   action="store_true", default=True,
+                   help="Enable Structural Causal Model (default: on)")
+    p.add_argument("--no-causal-model", dest="causal_model", action="store_false",
+                   help="Disable Structural Causal Model")
+    p.add_argument("--causal-noise-dim", type=int, default=16,
+                   help="Exogenous noise dim for SCM structural equations")
 
     # misc
     p.add_argument("--seed",           type=int,   default=7)
