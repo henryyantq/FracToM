@@ -1,63 +1,321 @@
 FracToM Non-Commercial Source-Available License (Version 1.0)
 
-Copyright (c) 2026
-Team ReAL
-
+Copyright (c) 2026 Team ReAL, Monash University.
 All rights reserved.
 
-1. Definitions
-“Software” means the FracToM neural network, including all source code, binaries, models, configuration files, and associated documentation contained in this repository.
+PLEASE READ THIS LICENSE AGREEMENT CAREFULLY BEFORE USING THE SOFTWARE.
+BY ACCESSING, DOWNLOADING, COPYING, OR OTHERWISE USING THE SOFTWARE, YOU
+ACKNOWLEDGE THAT YOU HAVE READ, UNDERSTOOD, AND AGREE TO BE BOUND BY THE
+TERMS AND CONDITIONS OF THIS LICENSE. IF YOU DO NOT AGREE, YOU MUST NOT
+ACCESS OR USE THE SOFTWARE.
 
-“You” (or “Your”) means any individual or legal entity exercising permissions granted by this License.
+------------------------------------------------------------------------
 
-“Non-Commercial Use” means any use that is not primarily intended for or directed toward commercial advantage or monetary compensation of any kind.
+1. DEFINITIONS
 
-2. Grant of Rights (Non-Commercial Only)
-Subject to the terms and conditions of this License, the Licensor hereby grants You a worldwide, royalty-free, non-exclusive, non-transferable, revocable license to:
+   (a) "Software" means the FracToM neural network architecture and all
+       associated source code, object code, pre-trained model weights,
+       configuration files, scripts, documentation, and any other
+       materials contained in or distributed with this repository,
+       including any updates, patches, or supplements thereto.
 
-Access and use the Software for non-commercial purposes.
+   (b) "Licensor" means Team ReAL, Monash University, and any
+       individual contributors who have assigned or licensed their
+       contributions to the Licensor.
 
-Reproduce and modify the Software for non-commercial purposes.
+   (c) "You" (or "Your") means the individual or legal entity
+       exercising the permissions granted by this License. For legal
+       entities, "You" includes any entity that controls, is controlled
+       by, or is under common control with You, where "control" means
+       (i) the power, direct or indirect, to cause the direction or
+       management of such entity, whether by contract or otherwise, or
+       (ii) ownership of fifty percent (50%) or more of the outstanding
+       shares or beneficial ownership of such entity.
 
-Distribute unmodified or modified versions of the Software for non-commercial purposes, provided that:
+   (d) "Non-Commercial Use" means any use that is not primarily
+       intended for, or directed toward, commercial advantage or
+       monetary compensation. For the avoidance of doubt, the following
+       are considered Non-Commercial Use:
+       (i)   academic research conducted at accredited educational
+             or research institutions;
+       (ii)  personal study and experimentation;
+       (iii) publication of academic papers, theses, and dissertations;
+       (iv)  teaching and coursework at accredited institutions.
 
-this License is included in full and
+   (e) "Derivative Work" means any work that is based on or derived
+       from the Software, including but not limited to modifications,
+       adaptations, translations, extensions, and works that
+       incorporate any portion of the Software.
 
-clear and visible attribution to the original authors and the FracToM project is retained.
+   (f) "Distribute" (or "Distribution") means to make available to
+       any third party by any means, including but not limited to
+       electronic transmission, physical media, or online hosting.
 
-No patent rights are granted under this License.
+------------------------------------------------------------------------
 
-3. Prohibited Uses
-You must not, without the Licensor’s prior written permission:
+2. GRANT OF RIGHTS (NON-COMMERCIAL ONLY)
 
-Use the Software, in whole or in part, in any product, service, or system that is offered for a fee or other commercial consideration (including, but not limited to, SaaS, consulting deliverables, or paid research contracts).
+   Subject to the terms and conditions of this License, the Licensor
+   hereby grants You a worldwide, royalty-free, non-exclusive,
+   non-transferable, revocable, limited license to:
 
-Use the Software to develop or train models that are then sold, licensed, or otherwise commercially exploited.
+   (a) Access, use, and run the Software solely for Non-Commercial Use;
 
-Redistribute the Software, or substantial portions of it, as part of any commercial product or service, or under a license that permits such commercial use.
+   (b) Reproduce and create Derivative Works of the Software solely
+       for Non-Commercial Use;
 
-Use the name “FracToM”, the names of the authors, or related project identifiers to endorse or promote any product or service without explicit written permission.
+   (c) Distribute verbatim or modified copies of the Software solely
+       for Non-Commercial Use, provided that all of the following
+       conditions are met:
 
-4. Academic and Research Use
-Academic, educational, and research institutions may use, modify, and redistribute the Software for non-commercial research and teaching purposes under the terms of this License.
-Where reasonably feasible, publications and derived works should cite the original FracToM paper or repository as appropriate.
+       (i)   this License is included in its entirety, without
+             modification, with every copy or Derivative Work;
 
-5. No Sublicensing
-You may not sublicense the Software. Any recipient of the Software must receive it under the terms of this License.
+       (ii)  clear and prominent attribution to the original authors
+             and the FracToM project is retained in all copies,
+             Derivative Works, and accompanying documentation;
 
-6. Ownership
-The Software is licensed, not sold. The Licensor retains all right, title, and interest in and to the Software, including all intellectual property rights not expressly granted to You under this License.
+       (iii) any modifications are clearly marked as such, with a
+             summary of changes, so as not to be misrepresented as
+             the original Software;
 
-7. Termination
-This License automatically terminates, without notice, if You breach any of its terms. Upon termination, You must immediately cease all use, distribution, and modification of the Software, and destroy all copies in Your possession or control.
-The Licensor may, at their sole discretion, offer a separate commercial license with different terms.
+       (iv)  modified versions are not presented under the name
+             "FracToM" without the Licensor's prior written consent.
 
-8. Disclaimer of Warranty
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
-IN NO EVENT SHALL THE LICENSOR OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+   No patent rights, trademark rights, or any other intellectual
+   property rights beyond those expressly stated herein are granted
+   under this License.
 
-9. Limitation of Liability
-TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, DATA, OR GOODWILL, ARISING OUT OF OR IN CONNECTION WITH THE USE OR INABILITY TO USE THE SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+------------------------------------------------------------------------
 
-10. Governing Law and Jurisdiction
-This License shall be governed by and construed in accordance with the laws of Monash University, without regard to its conflict of laws principles. Any dispute arising out of or in connection with this License shall be subject to the exclusive jurisdiction of the courts located in Monash University, Clayton Campus, VIC, Australia.
+3. PROHIBITED USES
+
+   Without the Licensor's prior written permission, You must not:
+
+   (a) Use the Software, in whole or in part, in any product, service,
+       or system that is offered for a fee or other commercial
+       consideration, including but not limited to software-as-a-service
+       (SaaS) platforms, consulting deliverables, paid research
+       contracts, or internal tools at for-profit organisations where
+       the Software provides a competitive or operational advantage;
+
+   (b) Use the Software to develop, train, fine-tune, or distil models
+       or systems that are subsequently sold, licensed, sublicensed, or
+       otherwise commercially exploited, whether directly or indirectly;
+
+   (c) Redistribute the Software, or any substantial portion thereof,
+       as part of a commercial product, service, or offering, or under
+       any license that permits such commercial use;
+
+   (d) Use the name "FracToM", the names or likenesses of the
+       Licensor, Team ReAL, Monash University, or any contributor to
+       endorse or promote any product, service, or publication derived
+       from or associated with the Software, without the Licensor's
+       prior explicit written consent;
+
+   (e) Remove, alter, or obscure any copyright notices, license texts,
+       attribution statements, or other proprietary markings contained
+       in or affixed to the Software;
+
+   (f) Attempt to reverse-engineer, decompile, or disassemble any
+       compiled or obfuscated portions of the Software, except to the
+       extent that such activity is expressly permitted by applicable
+       law notwithstanding this limitation.
+
+------------------------------------------------------------------------
+
+4. ACADEMIC AND RESEARCH USE
+
+   (a) Accredited academic, educational, and research institutions may
+       use, modify, and redistribute the Software for Non-Commercial
+       research, teaching, and scholarly purposes under the terms of
+       this License.
+
+   (b) Any publication, presentation, thesis, dissertation, or other
+       scholarly work that uses the Software or incorporates results
+       obtained with the Software must include a citation to the
+       original FracToM paper and/or repository in a manner consistent
+       with prevailing academic citation practices in the relevant
+       field.
+
+   (c) The Licensor makes no representations regarding the suitability
+       of the Software for any particular research purpose. Users are
+       solely responsible for validating the Software's correctness and
+       applicability to their research.
+
+------------------------------------------------------------------------
+
+5. NO SUBLICENSING
+
+   You may not sublicense the Software or any rights granted under this
+   License. Any recipient of the Software or a Derivative Work must
+   receive it under the identical terms of this License. You are
+   responsible for ensuring that downstream recipients are made aware
+   of and agree to these terms.
+
+------------------------------------------------------------------------
+
+6. OWNERSHIP AND INTELLECTUAL PROPERTY
+
+   (a) The Software is licensed, not sold. The Licensor retains all
+       right, title, and interest in and to the Software, including
+       without limitation all copyrights, patent rights, trade secret
+       rights, trademark rights, and any other intellectual property
+       rights therein, whether registered or unregistered, and whether
+       or not expressly granted to You under this License.
+
+   (b) Nothing in this License shall be construed as transferring any
+       ownership interest in the Software to You.
+
+   (c) Any feedback, suggestions, or contributions You provide to the
+       Licensor regarding the Software may be used by the Licensor
+       without restriction and without obligation to You.
+
+------------------------------------------------------------------------
+
+7. CONTRIBUTIONS
+
+   If You submit any contribution (including but not limited to code,
+   documentation, or bug fixes) to the Software, You hereby grant the
+   Licensor a perpetual, worldwide, non-exclusive, royalty-free,
+   irrevocable license to use, reproduce, modify, display, perform,
+   sublicense, and distribute such contribution as part of the Software
+   under the terms of this License or any successor license chosen by
+   the Licensor. You represent that You have the legal right to grant
+   such a license.
+
+------------------------------------------------------------------------
+
+8. TERMINATION
+
+   (a) This License is effective until terminated. This License will
+       terminate automatically, without notice from the Licensor, if
+       You breach any of its terms or conditions.
+
+   (b) Upon termination, You must immediately:
+       (i)   cease all use, distribution, and modification of the
+             Software and any Derivative Works;
+       (ii)  destroy all copies of the Software and Derivative Works
+             in Your possession or control;
+       (iii) certify such destruction in writing to the Licensor upon
+             request.
+
+   (c) Sections 6 (Ownership), 9 (Disclaimer), 10 (Limitation of
+       Liability), and 11 (Governing Law) shall survive any
+       termination or expiration of this License.
+
+   (d) The Licensor reserves the right, at its sole discretion, to
+       offer separate commercial licenses with different terms. Enquiry
+       regarding commercial licensing should be directed to the
+       Licensor.
+
+------------------------------------------------------------------------
+
+9. DISCLAIMER OF WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT
+   WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+   TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+   PURPOSE, TITLE, NON-INFRINGEMENT, AND ACCURACY. THE LICENSOR DOES
+   NOT WARRANT THAT THE SOFTWARE WILL BE UNINTERRUPTED, ERROR-FREE,
+   SECURE, OR FREE OF VIRUSES OR OTHER HARMFUL COMPONENTS, OR THAT
+   DEFECTS WILL BE CORRECTED.
+
+   THE ENTIRE RISK AS TO THE QUALITY, PERFORMANCE, AND RESULTS
+   OBTAINED FROM THE SOFTWARE IS WITH YOU. SHOULD THE SOFTWARE PROVE
+   DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR,
+   OR CORRECTION.
+
+   NO ORAL OR WRITTEN INFORMATION OR ADVICE GIVEN BY THE LICENSOR OR
+   ITS REPRESENTATIVES SHALL CREATE A WARRANTY NOT EXPRESSLY STATED IN
+   THIS LICENSE.
+
+------------------------------------------------------------------------
+
+10. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT
+   SHALL THE LICENSOR, ITS AFFILIATES, OFFICERS, EMPLOYEES, AGENTS,
+   OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+   EXEMPLARY, CONSEQUENTIAL, OR PUNITIVE DAMAGES, INCLUDING BUT NOT
+   LIMITED TO LOSS OF PROFITS, REVENUE, DATA, GOODWILL, BUSINESS
+   OPPORTUNITY, OR ANTICIPATED SAVINGS, ARISING OUT OF OR IN
+   CONNECTION WITH:
+
+   (a) THE USE OR INABILITY TO USE THE SOFTWARE;
+   (b) ANY ERRORS, INACCURACIES, OR DEFECTS IN THE SOFTWARE;
+   (c) ANY CONTENT OBTAINED FROM OR GENERATED BY THE SOFTWARE;
+   (d) UNAUTHORISED ACCESS TO OR ALTERATION OF YOUR DATA;
+   (e) ANY OTHER MATTER RELATING TO THE SOFTWARE;
+
+   WHETHER BASED ON WARRANTY, CONTRACT, TORT (INCLUDING NEGLIGENCE),
+   STRICT LIABILITY, OR ANY OTHER LEGAL THEORY, AND REGARDLESS OF
+   WHETHER THE LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+   DAMAGES.
+
+   IN NO EVENT SHALL THE LICENSOR'S TOTAL AGGREGATE LIABILITY TO YOU
+   FOR ALL CLAIMS ARISING OUT OF OR RELATING TO THIS LICENSE OR THE
+   SOFTWARE EXCEED THE AMOUNT OF ONE AUSTRALIAN DOLLAR (AUD $1.00).
+
+------------------------------------------------------------------------
+
+11. GOVERNING LAW AND JURISDICTION
+
+   (a) This License shall be governed by and construed in accordance
+       with the laws of the State of Victoria, Australia, without
+       regard to its conflict of laws provisions.
+
+   (b) Any dispute, controversy, or claim arising out of or relating
+       to this License, or the breach, termination, or invalidity
+       thereof, shall be subject to the exclusive jurisdiction of the
+       courts of the State of Victoria, Australia, and the Federal
+       Court of Australia sitting in Melbourne.
+
+   (c) You irrevocably consent to the personal jurisdiction of such
+       courts and waive any objection to venue or inconvenient forum.
+
+------------------------------------------------------------------------
+
+12. SEVERABILITY
+
+   If any provision of this License is held to be invalid,
+   unenforceable, or contrary to law by a court of competent
+   jurisdiction, such provision shall be modified to the minimum extent
+   necessary to make it valid and enforceable, or if modification is
+   not possible, severed from this License. The remaining provisions
+   shall continue in full force and effect.
+
+------------------------------------------------------------------------
+
+13. ENTIRE AGREEMENT
+
+   This License constitutes the entire agreement between You and the
+   Licensor with respect to the Software and supersedes all prior or
+   contemporaneous understandings, agreements, or representations,
+   whether oral or written, regarding such subject matter. No
+   amendment to or modification of this License shall be binding unless
+   in writing and signed by the Licensor.
+
+------------------------------------------------------------------------
+
+14. WAIVER
+
+   The failure of the Licensor to enforce any right or provision of
+   this License shall not constitute a waiver of such right or
+   provision. Any waiver of any provision of this License shall be
+   effective only if in writing and signed by the Licensor.
+
+------------------------------------------------------------------------
+
+15. CONTACT
+
+   For enquiries regarding commercial licensing, permissions, or other
+   matters relating to this License, please contact:
+
+   Team ReAL
+   Monash University
+   Clayton Campus, VIC 3800, Australia
+
+------------------------------------------------------------------------
+
+END OF LICENSE
