@@ -2013,6 +2013,28 @@ class FracToMNet(nn.Module):
                 "counterfactual_distances": cf_distances,
             }
 
+        # 2.6) Cross-depth causal gating — use discovered adjacency to
+        # modulate column outputs so that the task loss backpropagates
+        # a gradient signal through the causal discovery module.
+        # Without this, sparsity loss drives cross_adj to zero because
+        # there is no positive gradient to keep edges alive.
+        if self.use_causal and causal_info.get("cross_depth_adjacency") is not None:
+            cross_adj = causal_info["cross_depth_adjacency"]  # (K+1, K+1)
+            K = len(column_outputs)
+            cols_stacked = torch.stack(column_outputs, dim=0)  # (K+1, B, D)
+            for k in range(K):
+                # Weighted sum of other columns' outputs, gated by
+                # discovered causal edges:  Σ_{j≠k} A[j,k] · h_j
+                weights = cross_adj[:, k]           # (K+1,) — inbound edges
+                weights = weights.clone()
+                weights[k] = 0.0                    # no self-loop
+                if weights.sum() > 1e-8:
+                    causal_contrib = (
+                        weights.unsqueeze(-1).unsqueeze(-1)  # (K+1, 1, 1)
+                        * cols_stacked                        # (K+1, B, D)
+                    ).sum(0)                                  # (B, D)
+                    column_outputs[k] = column_outputs[k] + causal_contrib
+
         # 3) Attention-weighted join across columns
         joined, alpha = self.join(column_outputs, h_input)
 
@@ -2178,7 +2200,10 @@ class FracToMLoss(nn.Module):
         if report.causal_adjacency is not None:
             causal_sparse = report.causal_adjacency.sum()
         if report.cross_depth_adjacency is not None:
-            causal_sparse = causal_sparse + report.cross_depth_adjacency.sum()
+            # Cross-depth adjacency receives weaker task gradients than
+            # BDI adjacency (additive gating vs. structural equations),
+            # so apply a reduced sparsity penalty to prevent collapse.
+            causal_sparse = causal_sparse + 0.1 * report.cross_depth_adjacency.sum()
         loss = loss + self.lambda_causal_sparsity * causal_sparse
 
         # 7) Counterfactual ordering — deeper columns should have larger
@@ -2307,12 +2332,24 @@ def analyse_mentalizing_depth(
         lines.append("Cross-Depth Causal Structure:")
         cd = report.cross_depth_adjacency.detach()
         K = cd.shape[0]
+        # Print full adjacency matrix for visibility
+        col_labels = [f"Col {i}" for i in range(K)]
+        header = "          " + "  ".join(f"{c:>7s}" for c in col_labels)
+        lines.append(header)
         for i in range(K):
-            for j in range(K):
-                if cd[i, j] > 0.3:
-                    lines.append(
-                        f"  Column {i} → Column {j}: {cd[i, j]:.3f}"
-                    )
+            row_vals = "  ".join(
+                f"{cd[i, j]:7.3f}" if i != j else "      ·"
+                for j in range(K)
+            )
+            lines.append(f"  Col {i}  {row_vals}")
+        # Highlight strong edges
+        strong = [(i, j, cd[i, j].item())
+                  for i in range(K) for j in range(K)
+                  if i != j and cd[i, j] > 0.3]
+        if strong:
+            lines.append("  Strong edges (> 0.3):")
+            for i, j, w in strong:
+                lines.append(f"    Column {i} → Column {j}: {w:.3f}")
 
     if report.counterfactual_distances:
         lines.append("")
@@ -2380,7 +2417,7 @@ def extract_causal_graph(
         edges = []
         for i in range(cd.shape[0]):
             for j in range(cd.shape[1]):
-                if cd[i, j] > 0.3:
+                if cd[i, j] > 0.15:
                     edges.append((i, j, cd[i, j].item()))
         result["cross_depth_edges"] = edges
     else:
