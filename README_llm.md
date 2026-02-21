@@ -38,6 +38,15 @@ Technical documentation for `mind.py` (PyTorch) and `mlx_mind.py` (MLX / Apple S
    - 7.6 [Usage Examples](#76-usage-examples)
    - 7.7 [Performance Characteristics](#77-performance-characteristics)
    - 7.8 [Known Differences & Limitations](#78-known-differences--limitations)
+8. [Dataset Synthesis & Training Pipeline](#8-dataset-synthesis--training-pipeline)
+   - 8.1 [Pipeline Overview](#81-pipeline-overview)
+   - 8.2 [Stage 1 — Data Synthesis (`api.py`)](#82-stage-1--data-synthesis-apipy)
+   - 8.3 [Stage 2 — Tokenisation & Packaging (`data.py`)](#83-stage-2--tokenisation--packaging-datapy)
+   - 8.4 [Stage 3 — Pre-training / Fine-tuning (`pretrain.py`)](#84-stage-3--pre-training--fine-tuning-pretrainpy)
+   - 8.5 [End-to-End Walkthrough](#85-end-to-end-walkthrough)
+   - 8.6 [Special Tokens Reference](#86-special-tokens-reference)
+   - 8.7 [Auxiliary Losses](#87-auxiliary-losses)
+   - 8.8 [Configuration Recipes](#88-configuration-recipes)
 
 ---
 
@@ -1140,6 +1149,615 @@ Benchmarked on Apple Silicon (M-series, unified memory) with default `MindConfig
 8. **Weight tying** — MLX implements weight tying by direct attribute assignment (`self.lm_head.weight = self.model.embed_tokens.weight`). This is re-applied after `_init_weights()` to ensure the tie is preserved after random initialisation. Both arrays share the same memory.
 
 9. **Cross-entropy loss** — The PyTorch version uses `F.cross_entropy` with `ignore_index=-100`. The MLX version computes softmax → log → gather manually with an explicit valid-token mask. Numerically equivalent (both use float32 for the softmax), but the MLX version has slightly more code.
+
+---
+
+## 8. Dataset Synthesis & Training Pipeline
+
+MIND requires cognitively-rich training data — not just raw text, but conversations annotated with **parallel cognitive traces** at three tiers (sensory / associative / executive) plus **BDI states** and **Theory-of-Mind chains**. This section documents the complete pipeline from data synthesis through to model training.
+
+### 8.1 Pipeline Overview
+
+The pipeline consists of three sequential stages, each handled by a dedicated module:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MIND Training Pipeline                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────┐      ┌──────────┐      ┌─────────────┐           │
+│  │  api.py   │ ──→  │  data.py  │ ──→  │ pretrain.py  │          │
+│  │  (synth)  │      │ (tokenize)│      │  (train)     │          │
+│  └──────────┘      └──────────┘      └─────────────┘           │
+│       │                  │                   │                  │
+│       ▼                  ▼                   ▼                  │
+│   JSONL file       PyTorch Dataset     Trained MIND model       │
+│  (structured       (input_ids,         (.pt checkpoint)         │
+│   conversations)    labels, masks,                              │
+│                     tier_ids, BDI)                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Stage | Module | Input | Output | Key Dependencies |
+|-------|--------|-------|--------|-------------------|
+| **1. Synthesis** | `api.py` | Complexity / domain config | `.jsonl` — structured conversations | `openai`, `pydantic` |
+| **2. Tokenisation** | `data.py` | `.jsonl` file | `MindPretrainDataset` (PyTorch) | `tiktoken` or `sentencepiece` |
+| **3. Training** | `pretrain.py` | Dataset + MIND model | Checkpoint `.pt` / `.npz` | `mind.py` or `mlx_mind.py` |
+
+---
+
+### 8.2 Stage 1 — Data Synthesis (`api.py`)
+
+`api.py` uses OpenAI's **Responses API** with **Pydantic structured output** to generate cognitively-annotated conversations via a novel **Cognition-of-Thought (CoTh)** prompting protocol.
+
+#### 8.2.1 What is Cognition-of-Thought (CoTh)?
+
+Standard chain-of-thought linearises reasoning into a single stream. CoTh instead produces **parallel cognitive streams** at three depths for every dialogue turn — mirroring the human cortical hierarchy:
+
+```
+                    ┌────────────────────────────────────┐
+                    │     Cognition-of-Thought (CoTh)    │
+                    ├────────────────────────────────────┤
+                    │                                    │
+ Tier 1 (Sensory)  │  "What do I directly perceive?"     │
+   ≈ sensory cortex │  → observations, emotional cues,   │
+                    │    salience                        │
+                    │                                    │
+ Tier 2 (Assoc.)   │  "What patterns does this          │
+   ≈ association    │   activate?"                       │
+     cortex         │  → schemas, pragmatic inferences,  │
+                    │    analogies                       │
+                    │                                    │
+ Tier 3 (Executive) │  "What is the other agent          │
+   ≈ prefrontal    │   thinking / wanting / planning?"  │
+     cortex         │  → ToM chains, causal reasoning,   │
+                    │    Pearl hierarchy, metacognition  │
+                    └────────────────────────────────────┘
+```
+
+This directly maps to MIND's three-tier decoder architecture: sensory layers process Tier 1 tokens, associative layers process Tier 2 tokens, and executive layers (with FracToM) process Tier 3 tokens.
+
+#### 8.2.2 Two-Stage Generation
+
+The synthesis pipeline calls the LLM twice per conversation:
+
+```
+Stage 1 — Scenario Generation (lightweight)
+  System: cognitive-science expert prompt
+  User:   complexity={0..5}, domain={20 domains}, num_agents, num_turns
+  Output: ScenarioSetup (Pydantic)
+
+Stage 2 — CoTh-Annotated Dialogue (heavy)
+  System: full CoTh protocol instructions
+  User:   scenario JSON + generation parameters
+  Output: SyntheticConversation (Pydantic)
+```
+
+#### 8.2.3 Pydantic Schema Hierarchy
+
+All outputs are **type-safe** via nested Pydantic models enforced by the Responses API:
+
+```
+SyntheticConversation
+├── scenario: ScenarioSetup
+│   ├── setting: str
+│   ├── agents: List[AgentProfile]         # name, role, traits, hidden_goal, private_knowledge
+│   ├── hidden_dynamics: str               # ground-truth invisible to some agents
+│   ├── target_tom_depth: int (0–5)
+│   └── cognitive_demands: List[str]
+├── dialogue: List[DialogueTurn]
+│   ├── speaker: str
+│   ├── utterance: str                     # spoken text
+│   ├── private_thought: str               # unspoken inner monologue
+│   ├── cognition: CognitionOfThought
+│   │   ├── sensory: SensoryTrace          # observations, emotional_cues, salience
+│   │   ├── associative: AssociativeTrace  # schemas, pragmatic_inferences, analogies
+│   │   └── executive: ExecutiveTrace      # tom_depth, perspective_shifts, causal_reasoning,
+│   │                                      #   pearl_level (0–2), metacognition
+│   ├── self_bdi: BDIState                 # belief, desire, intention
+│   ├── mental_models: List[MentalModel]   # target, inferred_bdi, confidence, tom_chain
+│   └── is_deceptive: bool
+├── labels: GroundTruthLabels
+│   ├── contains_deception: bool
+│   ├── deceptive_turns: List[int]
+│   ├── false_beliefs: List[str]
+│   ├── max_tom_depth: int (0–5)
+│   ├── dominant_pearl_level: int (0–2)
+│   ├── social_dynamic: str                # cooperation / competition / manipulation / negotiation
+│   └── cognitive_phenomena: List[str]      # e.g. curse of knowledge, false consensus
+└── summary: str
+```
+
+#### 8.2.4 Complexity Levels
+
+| Level | Description | ToM Depth | Agents | Example Dynamic |
+|-------|-------------|-----------|--------|-----------------|
+| 0 | Transparent | 0 | 2 | Goals align, no hidden information |
+| 1 | Implicit | 1 | 2–3 | Indirect communication, politeness |
+| 2 | Deceptive | 1–2 | 2–3 | First-order false beliefs, white lies |
+| 3 | Strategic | 2–3 | 2–4 | Second-order beliefs, manipulation |
+| 4 | Recursive | 3–4 | 2–4 | Nested belief chains (≥3 levels), counter-deception |
+| 5 | Adversarial | 4–5 | 2–4 | Full recursive mentalising, double agents, bluffing |
+
+Default distribution (when no fixed complexity): `[5%, 10%, 25%, 30%, 20%, 10%]` — biased toward mid-high complexity.
+
+#### 8.2.5 Domain Pool
+
+20 built-in domains ensure scenario diversity:
+
+> workplace politics · family dynamics · romantic relationship · business negotiation · medical consultation · legal proceeding · academic collaboration · diplomatic exchange · online marketplace · neighbourhood dispute · group project planning · job interview · therapy session · competitive game · emergency coordination · social media conflict · mentorship · whistleblowing dilemma · surprise event planning · cross-cultural misunderstanding
+
+#### 8.2.6 CLI Usage
+
+```bash
+# Set API key
+export OPENAI_API_KEY="sk-..."
+
+# Generate 100 conversations with mixed complexity
+python api.py generate --n 100 --output data/mind_train.jsonl
+
+# High-complexity only, 10 turns minimum
+python api.py generate --n 50 --complexity 4 --turns 10
+
+# Use a specific model
+python api.py generate --n 20 --model gpt-4o
+
+# Also export plain-text corpus with special tokens
+python api.py generate --n 20 --export-text data/corpus.txt
+
+# View dataset statistics
+python api.py stats data/mind_train.jsonl
+```
+
+#### 8.2.7 Output Format
+
+Each line in the JSONL output is a complete `SyntheticConversation` serialised as JSON:
+
+```json
+{"scenario": {"setting": "...", "agents": [...], ...}, "dialogue": [{"speaker": "Alice", "utterance": "...", "cognition": {"sensory": {...}, "associative": {...}, "executive": {...}}, "self_bdi": {"belief": "...", "desire": "...", "intention": "..."}, "mental_models": [...], "is_deceptive": false}, ...], "labels": {...}, "summary": "..."}
+```
+
+---
+
+### 8.3 Stage 2 — Tokenisation & Packaging (`data.py`)
+
+`data.py` bridges the gap between `api.py`'s structured JSONL output and the `(input_ids, labels, attention_mask)` tensors that `MindForCausalLM.forward()` expects.
+
+#### 8.3.1 MindTokenizer
+
+A thin wrapper around a base tokenizer (tiktoken or SentencePiece) that adds 18 MIND-specific special tokens:
+
+```python
+from data import MindTokenizer
+
+# Using tiktoken (default, no model file needed)
+tokenizer = MindTokenizer("cl100k_base")       # vocab ~100,295
+
+# Using SentencePiece
+tokenizer = MindTokenizer("path/to/model.model") # auto-detected
+
+# Encode text with special tokens
+ids = tokenizer.encode("<|turn|>Alice: Hello\n<|bdi|>B: ...", add_bos=True)
+
+# Decode back
+text = tokenizer.decode(ids)
+```
+
+**How encoding works:**
+
+1. Regex-split the input on all special token strings (preserving them)
+2. Encode each plain-text segment with the base tokenizer
+3. Insert special-token IDs at the corresponding positions
+4. Optionally prepend `<|bos|>` and append `<|eos|>`
+
+Special tokens are assigned IDs starting at `base_vocab_size + i`, so they never collide with the base vocabulary.
+
+#### 8.3.2 Conversation Serialisation
+
+Each JSONL record is serialised to a special-token-annotated text string:
+
+```
+<|conversation|>
+<|scenario|>Two colleagues in a meeting room<|/scenario|>
+<|turn|>Alice: The project looks great, Bob.
+<|thought|>I need to gauge his awareness of the cuts.
+<|sensory|>Bob looks relaxed | No tension cues
+<|associative|>performance review opener | compliment as rapport-building
+<|executive|>I think Bob believes the project is safe | If I reveal cuts now, Bob will panic
+<|bdi|>B: Budget cuts are coming | D: Assess Bob's awareness | I: Probe subtly without revealing
+<|tom|>I think Bob believes the project is safe [conf=0.8]
+<|pearl|>L1 depth=2
+<|deceptive|>
+<|/turn|>
+<|turn|>Bob: Thanks! We're on track.
+  ... (same structure)
+<|honest|>
+<|/turn|>
+<|/conversation|>
+```
+
+Key design decisions:
+
+- **Pipe-delimited lists** (`|`) for observations, schemas, etc. — keeps tokenisation simple
+- **One BDI target per turn** — extracted as `BDITarget` dataclass for auxiliary supervision
+- **`<|deceptive|>` / `<|honest|>` flags** — enable MIND to learn deception detection
+
+#### 8.3.3 Tier-ID Annotation
+
+Every token receives a **cognitive tier label** (0–3) determined by its surrounding special tokens:
+
+```
+<|scenario|>  Two  colleagues  ...  <|/scenario|>  <|turn|>  Alice:  ...
+    0           0      0                 0             0        0
+
+<|sensory|>  Bob  looks  relaxed  <|associative|>  performance  review  ...
+    1          1     1      1          2              2           2
+
+<|executive|>  I  think  Bob  believes  <|bdi|>  B:  Budget  cuts  ...
+     3          3    3     3      3        3      3     3       3
+```
+
+These tier IDs serve two purposes:
+1. **Tier routing loss** — soft KL guidance nudging router decisions toward the appropriate cognitive module
+2. **Analysis** — measuring how well the model's internal routing aligns with cognitive theory
+
+#### 8.3.4 Sequence Packaging Modes
+
+`MindPretrainDataset` supports two modes:
+
+| Mode | Flag | Behaviour | When to Use |
+|------|------|-----------|-------------|
+| **Packed** | `pack_sequences=True` (default) | Concatenate all conversations with `<|eos|>` separators, slice into fixed-length windows | Pre-training (maximise throughput) |
+| **Padded** | `pack_sequences=False` | Truncate/pad each conversation independently to `max_length` | Fine-tuning with `--bdi-loss` (preserves per-conversation BDI alignment) |
+
+**Packed mode:**
+```
+[conv1 tokens] <|eos|> [conv2 tokens] <|eos|> [conv3 tokens] ...
+|←── window 1 (2048) ──→|←── window 2 (2048) ──→|←── window 3 ...
+```
+
+**Padded mode:**
+```
+[conv1 tokens] <|pad|> <|pad|> ... <|pad|>   ← sample 1 (2048)
+[conv2 tokens] <|pad|> <|pad|> ... <|pad|>   ← sample 2 (2048)
+```
+
+#### 8.3.5 Dataset Output Schema
+
+Each sample from `MindPretrainDataset` is a dictionary:
+
+```python
+{
+    "input_ids":      Tensor(max_length,),      # token IDs
+    "labels":         Tensor(max_length,),      # shifted targets (-100 for pad)
+    "attention_mask": Tensor(max_length,),      # 1 for real, 0 for pad
+    "tier_ids":       Tensor(max_length,),      # 0=general, 1=sensory, 2=assoc, 3=exec
+    "bdi_targets":    List[BDITarget],           # ground-truth BDI (padded mode only)
+}
+```
+
+Labels are the standard causal-LM shifted copy: `labels[i] = input_ids[i+1]`. Pad positions get `-100` (PyTorch's `ignore_index`).
+
+---
+
+### 8.4 Stage 3 — Pre-training / Fine-tuning (`pretrain.py`)
+
+`pretrain.py` connects everything together: loads the dataset, builds the MIND model, and runs the training loop with optional auxiliary losses.
+
+#### 8.4.1 Backend Selection
+
+| Backend | Flag | Device | Notes |
+|---------|------|--------|-------|
+| PyTorch | *(default)* | MPS / CUDA / CPU (auto-detected) | Full training loop with all features |
+| MLX | `--mlx` | Metal GPU (Apple Silicon) | Accelerated via `value_and_grad` + `clip_grad_norm` |
+
+#### 8.4.2 Loss Components
+
+The total training loss combines up to **three** components:
+
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{LM}} + \alpha \cdot \mathcal{L}_{\text{router}} + \lambda_{\text{BDI}} \cdot \mathcal{L}_{\text{BDI}} + \lambda_{\text{tier}} \cdot \mathcal{L}_{\text{tier}}$$
+
+| Loss | Source | Default | Description |
+|------|--------|---------|-------------|
+| $\mathcal{L}_{\text{LM}}$ | Always on | — | Standard cross-entropy (next-token prediction) |
+| $\mathcal{L}_{\text{router}}$ | Always on | $\alpha = 0.001$ | Load-balancing loss (from `mind.py`) |
+| $\mathcal{L}_{\text{BDI}}$ | `--bdi-loss` | $\lambda = 0.1$ | Cosine similarity: model BDI ↔ ground-truth BDI embeddings |
+| $\mathcal{L}_{\text{tier}}$ | `--tier-loss` | $\lambda = 0.05$ | KL divergence: router probs → tier-appropriate module distribution |
+
+#### 8.4.3 Optimiser & Schedule
+
+- **AdamW** with $\beta = (0.9, 0.95)$, weight decay = 0.1
+- **Warmup** → **cosine decay** learning rate schedule
+- **Gradient clipping** at `max_grad_norm = 1.0`
+
+```
+LR
+│   ╱‾‾‾‾‾╲
+│  ╱        ╲
+│ ╱          ╲
+│╱            ╲___
+└──────────────────→ steps
+ warmup   cosine decay
+```
+
+#### 8.4.4 CLI Reference
+
+```bash
+# Basic pre-training
+python pretrain.py --data data/mind_synthetic.jsonl --epochs 5
+
+# Small model for quick testing (~15M params)
+python pretrain.py --data data/mind_synthetic.jsonl --small --epochs 2
+
+# MLX backend on Apple Silicon
+python pretrain.py --mlx --data data/mind_synthetic.jsonl --epochs 10
+
+# Full-featured with auxiliary losses
+python pretrain.py --data data/mind_synthetic.jsonl \
+    --bdi-loss --tier-loss \
+    --lambda-bdi 0.1 --lambda-tier 0.05 \
+    --epochs 20 --batch-size 4 --lr 3e-4
+
+# Resume from checkpoint
+python pretrain.py --data data/mind_synthetic.jsonl \
+    --checkpoint checkpoints/mind_epoch010.pt
+```
+
+**Full argument table:**
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--data` | *(required)* | Path to JSONL from `api.py` |
+| `--tokenizer` | `cl100k_base` | Tokenizer model path (`.model`) or tiktoken encoding name |
+| `--max-length` | `2048` | Maximum sequence length |
+| `--no-cognition` | `false` | Exclude cognitive traces (utterances only) |
+| `--no-packing` | `false` | Pad each conversation separately |
+| `--small` | `false` | Use ~15M param test config |
+| `--checkpoint` | — | Resume from `.pt` file |
+| `--mlx` | `false` | Use MLX backend |
+| `--cpu` | `false` | Force CPU |
+| `--epochs` | `10` | Number of training epochs |
+| `--batch-size` | `4` | Batch size |
+| `--lr` | `3e-4` | Peak learning rate |
+| `--weight-decay` | `0.1` | AdamW weight decay |
+| `--max-grad-norm` | `1.0` | Gradient clipping threshold |
+| `--warmup-steps` | `100` | Linear warmup steps |
+| `--val-ratio` | `0.1` | Fraction of data for validation |
+| `--seed` | `42` | Random seed |
+| `--log-every` | `10` | Log every N steps |
+| `--bdi-loss` | `false` | Enable BDI supervision loss |
+| `--lambda-bdi` | `0.1` | BDI loss weight |
+| `--tier-loss` | `false` | Enable tier-routing guidance loss |
+| `--lambda-tier` | `0.05` | Tier loss weight |
+| `--save-dir` | `checkpoints` | Directory for saving checkpoints |
+
+> **Note:** `--bdi-loss` automatically enables `--no-packing` (per-conversation BDI alignment is required).
+
+---
+
+### 8.5 End-to-End Walkthrough
+
+Complete example from zero to trained model:
+
+```bash
+# ──────────────────────────────────────────────────────
+# Step 0: Install dependencies
+# ──────────────────────────────────────────────────────
+pip install openai pydantic tiktoken torch
+export OPENAI_API_KEY="sk-..."
+
+# ──────────────────────────────────────────────────────
+# Step 1: Synthesise training data (≈ $2-5 for 100 convs)
+# ──────────────────────────────────────────────────────
+python api.py generate \
+    --n 100 \
+    --output data/mind_train.jsonl \
+    --turns 8
+
+# Check what was generated
+python api.py stats data/mind_train.jsonl
+
+# ──────────────────────────────────────────────────────
+# Step 2: Quick sanity check on the data pipeline
+# ──────────────────────────────────────────────────────
+python data.py          # runs built-in _demo()
+
+# ──────────────────────────────────────────────────────
+# Step 3a: Train a small test model (PyTorch)
+# ──────────────────────────────────────────────────────
+python pretrain.py \
+    --data data/mind_train.jsonl \
+    --small \
+    --epochs 3 \
+    --batch-size 2
+
+# ──────────────────────────────────────────────────────
+# Step 3b: Train with Apple MLX backend
+# ──────────────────────────────────────────────────────
+python pretrain.py \
+    --mlx \
+    --data data/mind_train.jsonl \
+    --small \
+    --epochs 3
+
+# ──────────────────────────────────────────────────────
+# Step 4: Full training with auxiliary losses
+# ──────────────────────────────────────────────────────
+python pretrain.py \
+    --data data/mind_train.jsonl \
+    --bdi-loss \
+    --tier-loss \
+    --epochs 20 \
+    --lr 3e-4 \
+    --batch-size 4
+```
+
+**Expected output at each step:**
+
+```
+# Step 1 output:
+Synthesizing 100 conversations (model=gpt-4o)
+  Complexity distribution: {0: 5, 1: 10, 2: 25, 3: 30, 4: 20, 5: 10}
+[1/100] complexity=2, agents=2, turns=8
+  Stage 1: scenario (complexity=2, domain=workplace politics)
+  Stage 2: 8-turn dialogue with CoTh annotations
+  -> 8 turns, ToM=2, Pearl=L1, deceptive
+...
+Done: 100 succeeded, 0 failed out of 100
+
+# Step 3 output:
+======================================================================
+MIND Pre-training / Fine-tuning
+======================================================================
+Tokenizer: cl100k_base (vocab=100,295)
+Loaded 100 conversations from data/mind_train.jsonl
+Created 48 training sequences (max_length=2048, packed)
+Dataset: 48 samples (train=43, val=5)
+Using SMALL config for testing
+
+Model: 15,234,567 params (15.2M)
+Active per token: 8,456,789 (55.5%)
+Device: mps
+
+Training: 3 epochs, batch_size=2, lr=0.0003
+  step    10 | loss=8.2345 ppl=3762.1 | lr=3.00e-04
+  ...
+Epoch   1/3 | train: loss=7.12 ppl=1234.5 | val: loss=7.05 ppl=1152.3 * | 12.3s
+Epoch   2/3 | train: loss=6.45 ppl= 633.7 | val: loss=6.52 ppl= 678.9   | 11.8s
+Epoch   3/3 | train: loss=5.98 ppl= 395.2 | val: loss=6.15 ppl= 469.8 * | 11.5s
+
+Best val loss: 6.15 (ppl=469.8)
+```
+
+---
+
+### 8.6 Special Tokens Reference
+
+`MindTokenizer` injects 18 special tokens into the vocabulary. They are assigned consecutive IDs starting at `base_vocab_size`:
+
+| Token | ID Offset | Purpose | Tier |
+|-------|-----------|---------|------|
+| `<\|pad\|>` | +0 | Padding | — |
+| `<\|bos\|>` | +1 | Beginning of sequence | — |
+| `<\|eos\|>` | +2 | End of sequence / conversation separator | — |
+| `<\|conversation\|>` | +3 | Conversation boundary open | 0 (reset) |
+| `<\|/conversation\|>` | +4 | Conversation boundary close | 0 (reset) |
+| `<\|scenario\|>` | +5 | Scenario description open | 0 (reset) |
+| `<\|/scenario\|>` | +6 | Scenario description close | 0 (reset) |
+| `<\|turn\|>` | +7 | Dialogue turn open | 0 (reset) |
+| `<\|/turn\|>` | +8 | Dialogue turn close | 0 (reset) |
+| `<\|thought\|>` | +9 | Private inner monologue | 2 (associative) |
+| `<\|sensory\|>` | +10 | Tier 1: perceptual observations | 1 (sensory) |
+| `<\|associative\|>` | +11 | Tier 2: schemas, inferences | 2 (associative) |
+| `<\|executive\|>` | +12 | Tier 3: ToM, causal reasoning | 3 (executive) |
+| `<\|bdi\|>` | +13 | BDI state annotation | 3 (executive) |
+| `<\|tom\|>` | +14 | Theory-of-Mind chain | 3 (executive) |
+| `<\|pearl\|>` | +15 | Pearl hierarchy level | 3 (executive) |
+| `<\|deceptive\|>` | +16 | Deceptive utterance flag | — |
+| `<\|honest\|>` | +17 | Honest utterance flag | — |
+
+The **Tier** column shows how `build_tier_ids()` labels tokens following each marker. "Reset" tokens restore the tier back to 0 (general).
+
+---
+
+### 8.7 Auxiliary Losses
+
+#### 8.7.1 BDI Supervision Loss (`BDISupervisionLoss`)
+
+**Goal:** Align MIND's internal BDI representations (from FracToM integration) with semantically meaningful ground-truth BDI content.
+
+**Mechanism:**
+
+```
+Ground-truth BDI text       Model's internal BDI state
+   "Budget cuts are           bdi_states[layer].belief
+    coming"                       at annotated position
+       │                              │
+       ▼                              ▼
+  embed_tokens(text)           (B, S, factor_dim)
+  → mean pool → Linear
+  → (1, factor_dim)                   │
+       │                              │
+       └──── cosine similarity ───────┘
+                    │
+            loss = 1 - cos_sim
+```
+
+- Uses MIND's **own embedding layer** for text encoding (no external model needed)
+- Averages loss across all BDI-annotated positions and all executive layers
+- Only active in **padded mode** (`--no-packing`) because BDI spans are per-conversation
+
+#### 8.7.2 Tier Routing Loss (`TierRoutingLoss`)
+
+**Goal:** Softly guide the MoE router to send tokens to the cognitive module matching their tier.
+
+**Mechanism:**
+
+```
+Tier 1 (sensory) tokens    → prefer module 0 (analytical)     [0.60, 0.20, 0.15, 0.05]
+Tier 2 (associative) tokens → prefer modules 1,2 (ling+assoc) [0.10, 0.35, 0.40, 0.15]
+Tier 3 (executive) tokens   → prefer module 3 (social)        [0.05, 0.10, 0.15, 0.70]
+Tier 0 (general) tokens     → uniform (no guidance)           [0.25, 0.25, 0.25, 0.25]
+```
+
+Computed as **KL divergence** between the router's module-level probability distribution and the soft target above. The strength parameter (default 0.05) ensures this is a gentle nudge, not a hard constraint — the model is free to discover alternative routing strategies.
+
+---
+
+### 8.8 Configuration Recipes
+
+#### Small Config (Testing / Debugging)
+
+```python
+# ~15M params — use with --small flag
+MindConfig(
+    vocab_size=100_295,    # tiktoken + 18 special tokens
+    hidden_size=384,
+    num_hidden_layers=8,   # 2 sensory + 4 associative + 2 executive
+    num_attention_heads=6,
+    num_key_value_heads=2,
+    head_dim=64,
+    dense_intermediate_size=1024,
+    expert_intermediate_size=128,
+    shared_expert_intermediate_size=512,
+    num_cognitive_modules=4,
+    experts_per_module=2,   # 8 total experts
+    num_experts_per_tok=2,
+    bdi_factor_dim=64,
+)
+```
+
+#### Default Config (Full Scale)
+
+```python
+# ~1B params — default when no --small flag
+MindConfig(
+    vocab_size=100_295,
+    hidden_size=1536,
+    num_hidden_layers=24,  # 6 sensory + 12 associative + 6 executive
+    num_attention_heads=16,
+    num_key_value_heads=4,
+    head_dim=96,
+    dense_intermediate_size=4096,
+    expert_intermediate_size=1024,
+    shared_expert_intermediate_size=2048,
+    num_cognitive_modules=4,
+    experts_per_module=4,   # 16 total experts
+    num_experts_per_tok=2,
+    bdi_factor_dim=256,
+)
+```
+
+#### Recommended Training Hyperparameters by Dataset Size
+
+| Dataset Size | Epochs | Batch Size | LR | Warmup | Aux Losses | Packing |
+|-------------|--------|------------|-----|--------|------------|---------|
+| 50–200 convs | 20–50 | 2 | 3e-4 | 50 | Optional | Packed |
+| 200–1K convs | 10–20 | 4 | 3e-4 | 100 | Recommended | Packed → Padded |
+| 1K–10K convs | 5–10 | 8–16 | 1e-4 | 200 | Yes | Packed |
+| 10K+ convs | 3–5 | 16–32 | 5e-5 | 500 | Yes | Packed |
+
+> **Two-phase strategy:** Pre-train with packed mode (efficient, LM loss only), then fine-tune with padded mode + BDI/tier losses (slower, but enables cognitive supervision).
 
 ---
 
