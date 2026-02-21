@@ -24,6 +24,21 @@ FracToM ships with two equivalent implementations:
 
 Both expose the same `FracToMNet`, `FracToMLoss`, `InterpretabilityReport`, `analyse_mentalizing_depth`, `extract_causal_graph`, and `extract_bdi_activations` APIs. The MLX port uses `nn.value_and_grad` for training, Taylor-series matrix exponentials (order 8) in place of `torch.matrix_exp`, and `mx.array` throughout.
 
+### MIND — ~1 B Mixture-of-Experts Cognitive Language Model
+
+Built on top of FracToM, **MIND** (`mind.py` / `mlx_mind.py`) is a ~1 billion-parameter causal language model that integrates the BDI mental-state framework directly into a Transformer decoder. Key design choices:
+
+| Aspect | Detail |
+|--------|--------|
+| **Scale** | ~1.07 B total parameters, ~57 % active per token |
+| **Layers** | 24 decoder layers organised into a cognitive hierarchy: 6 *sensory*, 12 *associative*, 6 *executive* |
+| **Attention** | Grouped-Query Attention (16 query / 4 KV heads) with RoPE |
+| **MoE** | Hierarchical 2-stage routing — 4 modules × 4 experts = 16 total experts per MoE layer, top-2 gating |
+| **FracToM tie-in** | Executive layers carry a `FracToMIntegration` module that maintains and updates BDI (Belief-Desire-Intention) tensors across the sequence |
+| **Backends** | PyTorch (`mind.py`) and Apple MLX (`mlx_mind.py`) — same public API |
+
+> **Detailed documentation** — architecture walk-through, parameter budget, scaling recipes (3 B / 8 B / 30 B), and the full MLX porting guide — is available in **[README_llm.md](README_llm.md)**.
+
 Key components:
 
 ### Fractal Mentalizing Columns
