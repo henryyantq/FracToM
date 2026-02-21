@@ -13,9 +13,18 @@ Standard deep learning architectures used for social reasoning (e.g., opponent m
 
 ---
 
-## Architecture (`nn.py`)
+## Architecture
 
-The full model (`FracToMNet`, ~2700 lines) is defined in `nn.py`. Key components:
+FracToM ships with two equivalent implementations:
+
+| File | Backend | Best for |
+|------|---------|----------|
+| `nn.py` (~2 700 lines) | **PyTorch** | CUDA / MPS / CPU training |
+| `mlx_nn.py` (~2 200 lines) | **Apple MLX** | Metal GPU acceleration on Apple Silicon |
+
+Both expose the same `FracToMNet`, `FracToMLoss`, `InterpretabilityReport`, `analyse_mentalizing_depth`, `extract_causal_graph`, and `extract_bdi_activations` APIs. The MLX port uses `nn.value_and_grad` for training, Taylor-series matrix exponentials (order 8) in place of `torch.matrix_exp`, and `mx.array` throughout.
+
+Key components:
 
 ### Fractal Mentalizing Columns
 
@@ -211,8 +220,11 @@ The key design principle: a standard MLP can solve classes 0–1 from surface fe
 # Install dependencies
 pip install -r requirements.txt
 
-# Train with all enhancements (default)
+# Train with all enhancements (default — PyTorch, auto-selects MPS/CUDA/CPU)
 python collab_train.py --epochs 60 --hidden-dim 120 --depth 3
+
+# Train on Apple Silicon with MLX (Metal GPU)
+python collab_train.py --mlx --epochs 60 --hidden-dim 120 --depth 3
 
 # Ablation: uniform capacity (no FractalGen scheduling)
 python collab_train.py --capacity-schedule uniform --epochs 60
@@ -234,6 +246,13 @@ python collab_train.py \
   --guiding-belief --gist-dim 32 \
   --auxiliary-heads --lambda-auxiliary 0.1 \
   --depth 3
+
+# Same, but on Apple Silicon via MLX
+python collab_train.py --mlx \
+  --causal-model \
+  --capacity-schedule decreasing \
+  --guiding-belief --auxiliary-heads \
+  --epochs 60 --depth 3
 ```
 
 ### Command-Line Arguments
@@ -255,6 +274,13 @@ python collab_train.py \
 | `--auxiliary-heads` / `--no-auxiliary-heads` | on | Enable/disable per-column auxiliary classification heads |
 | `--causal-model` / `--no-causal-model` | on | Enable/disable Structural Causal Model |
 | `--causal-noise-dim` | `16` | Exogenous noise dimension for structural equations |
+
+#### Backend
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--mlx` | off | Use Apple MLX backend (Metal GPU) instead of PyTorch |
+| `--cpu` | off | Force CPU (PyTorch path only) |
 
 #### Training
 
@@ -297,7 +323,10 @@ The script also prints a textual interpretability summary including learned caus
 
 ### Programmatic Access
 
+**PyTorch**
+
 ```python
+import torch
 from nn import FracToMNet, FracToMLoss, extract_causal_graph, analyse_mentalizing_depth
 
 model = FracToMNet(
@@ -332,6 +361,31 @@ print(cg["counterfactual_distances"]) # {0: 0.01, 1: 0.15, 2: 0.38}
 print(analyse_mentalizing_depth(report))
 ```
 
+**Apple MLX** — identical API, different import:
+
+```python
+import mlx.core as mx
+from mlx_nn import FracToMNet, FracToMLoss, extract_causal_graph, analyse_mentalizing_depth
+
+model = FracToMNet(
+    input_dim=91, hidden_dim=120, mentalizing_depth=3,
+    causal_model=True, causal_noise_dim=16,
+    capacity_schedule="decreasing",
+    guiding_belief=True, gist_dim=32,
+    auxiliary_heads=True,
+)
+mx.eval(model.parameters())
+
+x = mx.random.normal((32, 91))
+logits, report = model(x, return_interpretability=True)
+
+print(report.column_dims)             # [120, 96, 72, 60]
+print(analyse_mentalizing_depth(report))
+
+cg = extract_causal_graph(report)
+print(cg["bdi_edges"])
+```
+
 ---
 
 ## Theoretical References
@@ -355,9 +409,13 @@ print(analyse_mentalizing_depth(report))
 - Python ≥ 3.9
 - PyTorch ≥ 2.0 (CUDA, MPS on macOS, or CPU)
 - Matplotlib ≥ 3.7
+- **Optional — Apple Silicon acceleration:** [MLX](https://ml-explore.github.io/mlx/) ≥ 0.30 (`pip install mlx`)
 
 ```bash
 pip install -r requirements.txt
+
+# For MLX support on Apple Silicon (M1/M2/M3/M4)
+pip install mlx
 ```
 
 ## License

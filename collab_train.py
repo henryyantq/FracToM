@@ -81,6 +81,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
+import numpy as np
 
 from nn import (
     FracToMLoss, FracToMNet, analyse_mentalizing_depth,
@@ -852,10 +853,561 @@ def save_causal_graph_visualization(
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
+# ║             MLX TRAINING PATH (Apple Silicon)                      ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+def _save_tom_hierarchy_viz_mlx(
+    depth_weights_np: np.ndarray,
+    sigma_map_np: Dict[int, np.ndarray],
+    output_dir: str,
+    max_samples_heatmap: int = 120,
+) -> None:
+    """ToM depth-usage distribution and epistemic uncertainty (numpy)."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("Visualization skipped: pip install matplotlib")
+        return
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    alpha = depth_weights_np
+    n, K = alpha.shape
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    axes[0].hist(
+        alpha.argmax(-1),
+        bins=[i - 0.5 for i in range(K + 1)],
+        edgecolor="black", rwidth=0.9,
+    )
+    axes[0].set_xticks(list(range(K)))
+    axes[0].set_xlabel("Dominant ToM depth")
+    axes[0].set_ylabel("Count")
+    axes[0].set_title("Dominant Theory-of-Mind Depth Distribution")
+
+    hc = min(max_samples_heatmap, n)
+    axes[1].imshow(alpha[:hc], aspect="auto", cmap="viridis")
+    axes[1].set_xlabel("ToM depth")
+    axes[1].set_ylabel("Sample index")
+    axes[1].set_title(f"Per-sample ToM depth weights (first {hc})")
+    plt.tight_layout()
+    fig.savefig(out / "tom_depth_weights.png", dpi=160)
+    plt.close(fig)
+
+    if sigma_map_np:
+        levels = sorted(sigma_map_np.keys())
+        means = [float(sigma_map_np[k].mean()) for k in levels]
+        fig2, ax2 = plt.subplots(figsize=(8, 4.8))
+        ax2.bar(levels, means)
+        ax2.set_xlabel("ToM depth")
+        ax2.set_ylabel("Mean epistemic uncertainty (σ)")
+        ax2.set_title("Epistemic Uncertainty by ToM Depth")
+        ax2.set_xticks(levels)
+        plt.tight_layout()
+        fig2.savefig(out / "tom_uncertainty.png", dpi=160)
+        plt.close(fig2)
+
+    print(f"Saved ToM hierarchy visualizations to: {out.resolve()}")
+
+
+def _save_causal_graph_viz_mlx(
+    report,
+    extract_fn,
+    output_dir: str,
+) -> None:
+    """Causal graph visualizations for MLX reports (numpy-based)."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("Causal visualization skipped: pip install matplotlib")
+        return
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    cg = extract_fn(report)
+
+    # --- 1. BDI adjacency heatmap ---
+    if cg["bdi_adjacency"] is not None:
+        adj = np.array(cg["bdi_adjacency"])
+        bdi_labels = ["Observation", "Belief", "Desire", "Intention"]
+        n_bdi = adj.shape[0]
+        labels = bdi_labels[:n_bdi] if n_bdi <= len(bdi_labels) else [
+            f"V{i}" for i in range(n_bdi)
+        ]
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+        im = ax.imshow(adj, cmap="YlOrRd", vmin=0.0, vmax=1.0)
+        ax.set_xticks(range(n_bdi))
+        ax.set_yticks(range(n_bdi))
+        ax.set_xticklabels(labels, rotation=45, ha="right")
+        ax.set_yticklabels(labels)
+        for i in range(n_bdi):
+            for j in range(n_bdi):
+                ax.text(j, i, f"{adj[i, j]:.2f}", ha="center", va="center",
+                        fontsize=9,
+                        color="white" if adj[i, j] > 0.5 else "black")
+        ax.set_title("BDI Causal Adjacency (SCM)")
+        ax.set_xlabel("Effect")
+        ax.set_ylabel("Cause")
+        fig.colorbar(im, ax=ax, shrink=0.75)
+        plt.tight_layout()
+        fig.savefig(out / "causal_bdi_adjacency.png", dpi=160)
+        plt.close(fig)
+
+    # --- 2. Pearl's Causal Hierarchy bar chart ---
+    if cg["hierarchy_weights"]:
+        cols = sorted(cg["hierarchy_weights"].keys())
+        levels = ["Association", "Intervention", "Counterfactual"]
+        weights_arr = np.stack(
+            [np.array(cg["hierarchy_weights"][c]) for c in cols]
+        )
+        fig, ax = plt.subplots(figsize=(8, 5))
+        x = range(len(cols))
+        width = 0.25
+        for i, lvl in enumerate(levels):
+            ax.bar([xi + i * width for xi in x], weights_arr[:, i],
+                   width=width, label=lvl)
+        ax.set_xticks([xi + width for xi in x])
+        ax.set_xticklabels([f"Col {c}" for c in cols])
+        ax.set_ylabel("Weight")
+        ax.set_title("Pearl's Causal Hierarchy Routing per ToM Depth")
+        ax.legend()
+        plt.tight_layout()
+        fig.savefig(out / "causal_pearl_hierarchy.png", dpi=160)
+        plt.close(fig)
+
+    # --- 3. Cross-depth adjacency ---
+    if cg["cross_depth_adjacency"] is not None:
+        cross = np.array(cg["cross_depth_adjacency"])
+        n_cols = cross.shape[0]
+        fig, ax = plt.subplots(figsize=(5.5, 4.8))
+        im = ax.imshow(cross, cmap="Blues", vmin=0.0, vmax=1.0)
+        ax.set_xticks(range(n_cols))
+        ax.set_yticks(range(n_cols))
+        ax.set_xticklabels([f"Col {i}" for i in range(n_cols)])
+        ax.set_yticklabels([f"Col {i}" for i in range(n_cols)])
+        for i in range(n_cols):
+            for j in range(n_cols):
+                ax.text(j, i, f"{cross[i, j]:.2f}", ha="center",
+                        va="center", fontsize=9,
+                        color="white" if cross[i, j] > 0.5 else "black")
+        ax.set_title("Cross-Depth Causal Structure")
+        ax.set_xlabel("Effect depth")
+        ax.set_ylabel("Cause depth")
+        fig.colorbar(im, ax=ax, shrink=0.75)
+        plt.tight_layout()
+        fig.savefig(out / "causal_cross_depth.png", dpi=160)
+        plt.close(fig)
+
+    print(f"Saved causal graph visualizations to: {out.resolve()}")
+
+
+def train_mlx(args: argparse.Namespace) -> None:
+    """MLX-accelerated training loop for Apple Silicon.
+
+    This function mirrors ``train()`` but uses the MLX backend (``mlx_nn``
+    module).  Data generation remains PyTorch-based for reproducibility and
+    is converted to ``mx.array`` before training.
+    """
+    try:
+        import mlx.core as mx
+        import mlx.nn as mnn
+        import mlx.optimizers as optim
+        from mlx.utils import tree_flatten
+    except ImportError:
+        raise RuntimeError(
+            "MLX is not installed.  Install with:  pip install mlx"
+        )
+    from mlx_nn import (
+        FracToMNet as MLXFracToMNet,
+        FracToMLoss as MLXFracToMLoss,
+        InterpretabilityReport as MLXReport,
+        analyse_mentalizing_depth as mlx_analyse,
+        extract_causal_graph as mlx_extract_causal_graph,
+        extract_bdi_activations as mlx_extract_bdi,
+        clip_grad_norm,
+    )
+
+    # ─── dataset (PyTorch generation → MLX arrays) ────────────────────
+    cfg = DatasetConfig(
+        n_samples=args.samples,
+        trait_noise_std=args.trait_noise,
+        action_noise_std=args.action_noise,
+        signal_noise_std=args.signal_noise,
+        belief_noise_std=args.belief_noise,
+        feature_noise_std=args.feature_noise,
+        seed=args.seed,
+    )
+    dataset = RecursiveSocialDataset(cfg)
+
+    n_train = int(len(dataset) * args.train_ratio)
+    n_test = len(dataset) - n_train
+    gen_split = torch.Generator().manual_seed(args.seed + 1)
+    perm = torch.randperm(len(dataset), generator=gen_split)
+    train_idx = perm[:n_train]
+    test_idx = perm[n_train:]
+
+    X_train = mx.array(dataset.features[train_idx].numpy())
+    y_train = mx.array(
+        dataset.labels[train_idx].numpy().astype(np.int32),
+    )
+    X_test = mx.array(dataset.features[test_idx].numpy())
+    y_test = mx.array(
+        dataset.labels[test_idx].numpy().astype(np.int32),
+    )
+
+    train_labels_np = dataset.labels[train_idx].numpy()
+    test_labels_np = dataset.labels[test_idx].numpy()
+    train_dist = {
+        i: int((train_labels_np == i).sum()) for i in range(NUM_CLASSES)
+    }
+    test_dist = {
+        i: int((test_labels_np == i).sum()) for i in range(NUM_CLASSES)
+    }
+
+    print("=" * 90)
+    print("FracToM — Recursive Social Reasoning Task  (MLX / Apple Silicon)")
+    print("=" * 90)
+    print(f"Backend: MLX (Metal GPU)")
+    print(f"Samples: total={len(dataset)} train={n_train} test={n_test}")
+    print(f"Input dim: {dataset.input_dim}")
+    print(f"Classes ({NUM_CLASSES}):")
+    for i, name in enumerate(CLASS_NAMES):
+        print(f"  {i}: {name}")
+    print(f"\nTrain distribution: {train_dist}")
+    print(f"Test  distribution: {test_dist}")
+    print()
+
+    # ─── model ────────────────────────────────────────────────────────
+    model = MLXFracToMNet(
+        input_dim=dataset.input_dim,
+        hidden_dim=args.hidden_dim,
+        mentalizing_depth=args.depth,
+        num_bdi_factors=3,
+        blocks_per_column=args.blocks,
+        num_heads=args.heads,
+        ff_mult=args.ff_mult,
+        dropout=args.dropout,
+        drop_path=args.drop_path,
+        num_classes=NUM_CLASSES,
+        causal_model=args.causal_model,
+        causal_noise_dim=args.causal_noise_dim,
+        capacity_schedule=args.capacity_schedule,
+        guiding_belief=args.guiding_belief,
+        gist_dim=args.gist_dim,
+        auxiliary_heads=args.auxiliary_heads,
+    )
+    mx.eval(model.parameters())
+
+    total_params = sum(v.size for _, v in tree_flatten(model.parameters()))
+
+    criterion = MLXFracToMLoss(
+        lambda_bdi=args.lambda_bdi,
+        lambda_uncertainty=args.lambda_uncertainty,
+        lambda_depth_entropy=args.lambda_depth_entropy,
+        lambda_dag=args.lambda_dag,
+        lambda_causal_sparsity=args.lambda_causal_sparsity,
+        lambda_counterfactual=args.lambda_counterfactual,
+        lambda_auxiliary=args.lambda_auxiliary,
+    )
+
+    BS = args.batch_size
+    total_steps = args.epochs * ((n_train + BS - 1) // BS)
+    schedule = optim.cosine_decay(
+        init=args.lr, decay_steps=max(1, total_steps),
+    )
+    optimizer = optim.AdamW(
+        learning_rate=schedule, weight_decay=args.weight_decay,
+    )
+
+    print(f"Model params: {total_params:,}")
+    print(f"Column dims: {model.column_dims}")
+    print(f"Capacity schedule: {args.capacity_schedule}")
+    print(f"Guiding belief: {args.guiding_belief}  gist_dim={args.gist_dim}")
+    print(f"Auxiliary heads: {args.auxiliary_heads}  "
+          f"λ_aux={args.lambda_auxiliary}")
+    print(f"Causal model: {args.causal_model}")
+    if args.causal_model:
+        causal_params = sum(
+            v.size for _, v in tree_flatten(model.scm.parameters())
+        ) + sum(
+            v.size for _, v in tree_flatten(model.causal_router.parameters())
+        ) + sum(
+            v.size
+            for _, v in tree_flatten(model.causal_discovery.parameters())
+        )
+        print(f"  SCM params: {causal_params:,}")
+        print(f"  Causal noise dim: {args.causal_noise_dim}")
+        print(f"  λ_dag={args.lambda_dag}  "
+              f"λ_sparse={args.lambda_causal_sparsity}  "
+              f"λ_cf={args.lambda_counterfactual}")
+    print("Starting training...\n")
+
+    # ─── train step closure ───────────────────────────────────────────
+    def train_step(xb, yb):
+        logits, report = model(xb, return_interpretability=True)
+        return criterion.compute_loss(logits, yb, report)
+
+    loss_and_grad_fn = mnn.value_and_grad(model, train_step)
+
+    # ─── training loop ────────────────────────────────────────────────
+    best_acc = 0.0
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        curriculum = max(0.0, 1.0 - epoch / args.epochs)
+        model.set_curriculum(curriculum)
+
+        perm_mx = mx.argsort(mx.random.uniform(shape=(n_train,)))
+        epoch_loss = 0.0
+        n_batches = 0
+
+        for i in range(0, n_train, BS):
+            idx = perm_mx[i : i + BS]
+            xb = X_train[idx]
+            yb = y_train[idx]
+
+            loss, grads = loss_and_grad_fn(xb, yb)
+            grads = clip_grad_norm(grads, max_norm=1.0)
+            optimizer.update(model, grads)
+            mx.eval(model.parameters(), optimizer.state)
+
+            epoch_loss += loss.item()
+            n_batches += 1
+
+        tr_loss = epoch_loss / max(1, n_batches)
+
+        # ─── periodic evaluation ──────────────────────────────────────
+        if epoch == 1 or epoch % args.eval_every == 0 or epoch == args.epochs:
+            model.eval()
+            te_loss_total = 0.0
+            te_correct = 0
+            te_count = 0
+
+            y_test_len = y_test.shape[0]
+            for i in range(0, y_test_len, BS):
+                xb = X_test[i : i + BS]
+                yb = y_test[i : i + BS]
+                logits, report = model(xb, return_interpretability=True)
+                bl = criterion.compute_loss(logits, yb, report)
+                mx.eval(bl)
+
+                bs = yb.shape[0]
+                te_loss_total += bl.item() * bs
+                preds = mx.argmax(logits, axis=-1)
+                te_correct += int(mx.sum(preds == yb).item())
+                te_count += bs
+
+            te_loss = te_loss_total / max(1, te_count)
+            te_acc = te_correct / max(1, te_count)
+            best_acc = max(best_acc, te_acc)
+
+            print(
+                f"Epoch {epoch:03d} | cur={curriculum:.3f} | "
+                f"train_loss={tr_loss:.4f} | "
+                f"test_loss={te_loss:.4f} test_acc={te_acc:.3f} "
+                f"best={best_acc:.3f}"
+            )
+
+    print("\nTraining complete.")
+
+    # ─── final evaluation ─────────────────────────────────────────────
+    model.eval()
+    all_preds_np: List[np.ndarray] = []
+    all_tgts_np: List[np.ndarray] = []
+    final_loss_total = 0.0
+    final_count = 0
+    last_report = None
+
+    y_test_len = y_test.shape[0]
+    for i in range(0, y_test_len, BS):
+        xb = X_test[i : i + BS]
+        yb = y_test[i : i + BS]
+        logits, report = model(xb, return_interpretability=True)
+        bl = criterion.compute_loss(logits, yb, report)
+        mx.eval(bl)
+
+        bs = yb.shape[0]
+        final_loss_total += bl.item() * bs
+        preds = mx.argmax(logits, axis=-1)
+        all_preds_np.append(np.array(preds))
+        all_tgts_np.append(np.array(yb))
+        final_count += bs
+        last_report = report
+
+    final_loss = final_loss_total / max(1, final_count)
+    preds_cat = np.concatenate(all_preds_np)
+    tgts_cat = np.concatenate(all_tgts_np)
+    final_acc = float((preds_cat == tgts_cat).mean())
+
+    # Confusion matrix (reuse PyTorch tensor for printing utilities)
+    cm = torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.long)
+    for t, p in zip(tgts_cat, preds_cat):
+        cm[int(t), int(p)] += 1
+
+    print("\n" + "=" * 90)
+    print("Final Evaluation")
+    print("=" * 90)
+    print(f"Test loss : {final_loss:.4f}")
+    print(f"Test acc  : {final_acc:.4f}")
+    print(f"Best acc  : {best_acc:.4f}")
+    print("\nConfusion Matrix (rows = true, cols = pred):")
+    print_confusion_matrix(cm)
+    print_per_class_accuracy(cm)
+
+    # ─── interpretability ─────────────────────────────────────────────
+    all_dw: List = []
+    sigma_acc: Dict[int, List] = {}
+    last_report = None
+
+    for i in range(0, y_test_len, BS):
+        xb = X_test[i : i + BS]
+        _, report = model(xb, return_interpretability=True)
+        all_dw.append(report.depth_weights)
+        for k, s in report.column_uncertainties.items():
+            sigma_acc.setdefault(k, []).append(s)
+        last_report = report
+
+    dw = mx.concatenate(all_dw, axis=0)
+
+    summary_report = MLXReport(
+        depth_weights=dw,
+        bdi_states={},
+        column_uncertainties={
+            k: mx.concatenate(v) for k, v in sigma_acc.items()
+        },
+        causal_adjacency=(
+            last_report.causal_adjacency if last_report else None
+        ),
+        causal_hierarchy_weights=(
+            last_report.causal_hierarchy_weights if last_report else None
+        ),
+        cross_depth_adjacency=(
+            last_report.cross_depth_adjacency if last_report else None
+        ),
+        dag_penalty=(
+            last_report.dag_penalty if last_report else None
+        ),
+        counterfactual_distances=(
+            last_report.counterfactual_distances if last_report else None
+        ),
+        auxiliary_logits=(
+            last_report.auxiliary_logits if last_report else None
+        ),
+        guiding_gists=(
+            last_report.guiding_gists if last_report else None
+        ),
+        column_dims=(
+            last_report.column_dims if last_report else None
+        ),
+    )
+
+    print("\n" + "=" * 90)
+    print("Mentalizing & Causal Interpretability Summary")
+    print("=" * 90)
+    print(mlx_analyse(summary_report))
+
+    # Causal graph analysis
+    if args.causal_model and last_report is not None:
+        cg = mlx_extract_causal_graph(last_report)
+        print("\n" + "-" * 60)
+        print("Causal Graph Summary (last test batch)")
+        print("-" * 60)
+        if cg["bdi_edges"]:
+            print("BDI causal edges (strength > 0.3):")
+            for src, tgt, w in cg["bdi_edges"]:
+                arrow = "━━▶" if w > 0.7 else "──▶" if w > 0.5 else "╌╌▶"
+                print(f"  {src:>9s} {arrow} {tgt:<9s}  ({w:.3f})")
+        if cg["cross_depth_edges"]:
+            print("\nCross-depth causal edges:")
+            for src, tgt, w in cg["cross_depth_edges"]:
+                print(f"  Column {src} → Column {tgt}:  {w:.3f}")
+        if cg["hierarchy_weights"]:
+            print("\nPearl's Causal Hierarchy per column:")
+            level_names = ["Association", "Intervention", "Counterfactual"]
+            for k, w in sorted(cg["hierarchy_weights"].items()):
+                w_np = np.array(w)
+                dominant = level_names[int(w_np.argmax())]
+                parts = "  ".join(
+                    f"{level_names[i][:5]}: {float(w_np[i]):.3f}"
+                    for i in range(3)
+                )
+                print(f"  Column {k}: {parts}  [{dominant}]")
+        if cg["counterfactual_distances"]:
+            print("\nCounterfactual distances "
+                  "(larger = richer CF reasoning):")
+            for k, d in sorted(cg["counterfactual_distances"].items()):
+                bar = "█" * int(d * 5)
+                print(f"  Column {k}: {d:.4f}  {bar}")
+        dag = cg.get("dag_penalty")
+        if dag is not None:
+            print(f"\nDAG penalty (0 = valid DAG): {dag:.6f}")
+
+    # ─── visualizations ───────────────────────────────────────────────
+    dw_np = np.array(dw)
+    sigma_np = {
+        k: np.array(v)
+        for k, v in summary_report.column_uncertainties.items()
+    }
+    _save_tom_hierarchy_viz_mlx(
+        dw_np, sigma_np, args.viz_dir, args.viz_heatmap_samples,
+    )
+
+    # FractalGen-inspired enhancements diagnostics
+    if last_report is not None:
+        print("\n" + "-" * 60)
+        print("FractalGen-Inspired Enhancements")
+        print("-" * 60)
+        if last_report.column_dims is not None:
+            print("Per-column capacity (capacity_schedule="
+                  f"{args.capacity_schedule}):")
+            for k, d in enumerate(last_report.column_dims):
+                print(f"  Column {k}: dim={d}")
+        if last_report.auxiliary_logits is not None:
+            print("\nAuxiliary head accuracy (deep supervision):")
+            xb = X_test[:BS]
+            yb = y_test[:BS]
+            _, rep = model(xb, return_interpretability=True)
+            if rep.auxiliary_logits:
+                for k, al in sorted(rep.auxiliary_logits.items()):
+                    acc_val = float(mx.mean(
+                        (mx.argmax(al, axis=-1) == yb).astype(mx.float32)
+                    ).item())
+                    print(f"  Column {k}: {acc_val:.3f}")
+        if last_report.guiding_gists is not None:
+            print("\nGuiding belief gist stats (γ, β norms):")
+            for k, (gamma, beta) in sorted(
+                last_report.guiding_gists.items()
+            ):
+                g_norm = float(
+                    mx.sqrt(mx.sum(gamma * gamma)).item()
+                )
+                b_norm = float(
+                    mx.sqrt(mx.sum(beta * beta)).item()
+                )
+                print(
+                    f"  Column {k}: ‖γ‖={g_norm:.4f}  "
+                    f"‖β‖={b_norm:.4f}"
+                )
+
+    # Save causal graph visualization
+    if args.causal_model and last_report is not None:
+        _save_causal_graph_viz_mlx(
+            last_report, mlx_extract_causal_graph, args.viz_dir,
+        )
+
+
+# ╔══════════════════════════════════════════════════════════════════════╗
 # ║                      TRAINING LOOP                                 ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 def train(args: argparse.Namespace) -> None:
+    if args.mlx:
+        return train_mlx(args)
+
     # Select device: prefer MPS (macOS Metal) > CUDA > CPU
     if not args.cpu:
         if torch.backends.mps.is_available() and torch.backends.mps.is_built():
@@ -1243,16 +1795,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # misc
     p.add_argument("--seed",           type=int,   default=7)
     p.add_argument("--cpu",            action="store_true")
+    p.add_argument("--mlx",            action="store_true",
+                   help="Use MLX backend for Apple Silicon GPU acceleration")
     p.add_argument("--viz-dir",        type=str,   default="visualizations")
     p.add_argument("--viz-heatmap-samples", type=int, default=120)
 
     return p
 
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, use_mlx: bool = False) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    if use_mlx:
+        import mlx.core as mx
+        mx.random.seed(seed)
 
 
 def main() -> None:
@@ -1271,7 +1828,7 @@ def main() -> None:
     if args.samples < 600:
         raise ValueError("--samples should be ≥ 600 for 6-class balance")
 
-    set_seed(args.seed)
+    set_seed(args.seed, use_mlx=args.mlx)
     train(args)
 
 
