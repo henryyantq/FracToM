@@ -502,7 +502,7 @@ def _pack_sequences(
         if pad_len > 0:
             chunk_ids = chunk_ids + [tokenizer.pad_id] * pad_len
             chunk_tiers = chunk_tiers + [0] * pad_len
-            labels = labels + [-100] * (pad_len - 1)  # already +1 from shift
+            labels = labels + [-100] * pad_len
 
         # Labels: same as input_ids shifted left; pad positions get -100
         labels_final = []
