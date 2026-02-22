@@ -338,16 +338,20 @@ class MindDataSynthesizer:
 
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str = "gpt-5-mini",
         max_retries: int = 3,
         retry_delay: float = 2.0,
         verbose: bool = True,
+        reasoning_effort: str = "low",
+        text_verbosity: str = "low",
     ):
         self.client = OpenAI()
         self.model = model
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.verbose = verbose
+        self.reasoning_effort = reasoning_effort
+        self.text_verbosity = text_verbosity
 
     # ── API wrapper with retry ──────────────────────────────────────
 
@@ -356,7 +360,6 @@ class MindDataSynthesizer:
         system: str,
         user: str,
         schema: type[BaseModel],
-        temperature: float = 0.9,
     ):
         """Call Responses API with structured output and exponential backoff."""
         for attempt in range(1, self.max_retries + 1):
@@ -368,7 +371,8 @@ class MindDataSynthesizer:
                         {"role": "user", "content": user},
                     ],
                     text_format=schema,
-                    temperature=temperature,
+                    reasoning={"effort": self.reasoning_effort},
+                    text={"verbosity": self.text_verbosity},
                 )
                 if response.output_parsed is not None:
                     return response.output_parsed
@@ -400,7 +404,7 @@ class MindDataSynthesizer:
         )
         if self.verbose:
             print(f"  Stage 1: scenario (complexity={complexity}, domain={domain})")
-        return self._parse(SCENARIO_SYSTEM, prompt, ScenarioSetup, temperature=1.0)
+        return self._parse(SCENARIO_SYSTEM, prompt, ScenarioSetup)
 
     # ── Stage 2: CoTh-annotated dialogue ────────────────────────────
 
@@ -417,7 +421,7 @@ class MindDataSynthesizer:
         if self.verbose:
             print(f"  Stage 2: {num_turns}-turn dialogue with CoTh annotations")
         return self._parse(
-            DIALOGUE_SYSTEM, prompt, SyntheticConversation, temperature=0.85,
+            DIALOGUE_SYSTEM, prompt, SyntheticConversation,
         )
 
     # ── Full pipeline ───────────────────────────────────────────────
@@ -661,7 +665,7 @@ def main() -> None:
 Examples:
   python api.py --n 100 --output data/mind_train.jsonl
   python api.py --n 50  --complexity 4 --turns 10
-  python api.py --n 20  --model gpt-4o --export-text data/corpus.txt
+  python api.py --n 20  --model gpt-5-mini --export-text data/corpus.txt
   python api.py --stats data/mind_train.jsonl""",
     )
 
@@ -672,7 +676,7 @@ Examples:
     gen.add_argument(
         "--n", type=int, default=10, help="Number of conversations",
     )
-    gen.add_argument("--model", type=str, default="gpt-4o", help="OpenAI model")
+    gen.add_argument("--model", type=str, default="gpt-5-mini", help="OpenAI model")
     gen.add_argument(
         "--complexity", type=int, default=None, choices=range(6),
         help="Fixed complexity 0-5 (default: mixed distribution)",
@@ -689,6 +693,16 @@ Examples:
     gen.add_argument("--max-retries", type=int, default=3)
     gen.add_argument("--seed", type=int, default=None, help="Random seed")
     gen.add_argument("--quiet", action="store_true")
+    gen.add_argument(
+        "--reasoning-effort", type=str, default="low",
+        choices=["none", "low", "medium", "high"],
+        help="Reasoning effort level (default: low)",
+    )
+    gen.add_argument(
+        "--verbosity", type=str, default="low",
+        choices=["low", "medium", "high"],
+        help="Text verbosity level (default: low)",
+    )
 
     # ── stats ───────────────────────────────────────────────────────
     st = sub.add_parser("stats", help="Print dataset statistics")
@@ -701,7 +715,7 @@ Examples:
         # Re-parse with legacy flat-argument style for convenience
         parser2 = argparse.ArgumentParser()
         parser2.add_argument("--n", type=int, default=10)
-        parser2.add_argument("--model", type=str, default="gpt-4o")
+        parser2.add_argument("--model", type=str, default="gpt-5-mini")
         parser2.add_argument("--complexity", type=int, default=None)
         parser2.add_argument("--turns", type=int, default=8)
         parser2.add_argument(
@@ -712,6 +726,8 @@ Examples:
         parser2.add_argument("--seed", type=int, default=None)
         parser2.add_argument("--quiet", action="store_true")
         parser2.add_argument("--stats", type=str, default=None)
+        parser2.add_argument("--reasoning-effort", type=str, default="low")
+        parser2.add_argument("--verbosity", type=str, default="low")
         args = parser2.parse_args()
 
         # --stats shortcut
@@ -749,6 +765,8 @@ Examples:
         model=args.model,
         max_retries=args.max_retries,
         verbose=not args.quiet,
+        reasoning_effort=args.reasoning_effort,
+        text_verbosity=args.verbosity,
     )
 
     conversations = synthesizer.synthesize_batch(
