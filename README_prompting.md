@@ -42,7 +42,7 @@ The recursive structure of Theory of Mind — *"I think you think I think …"* 
 - **Deception detection** — an agent reasons about whether the other is lying, and why.
 - **Fractal complexity measurement** — quantitative Hausdorff dimension estimates of the evolving belief structure.
 
-All of this is achieved purely through **structured prompting** of an OpenAI model (default: `gpt-4.1-mini`). No weights are trained; no fine-tuning is required.
+All of this is achieved purely through **structured prompting** of an OpenAI reasoning model (default: `gpt-5-mini`). No weights are trained; no fine-tuning is required.
 
 ---
 
@@ -87,7 +87,8 @@ The key invariant: information **degrades** through perspective-taking. Each `Mi
 │   F(B) = ⋃ᵢ fᵢ(B)  →  fixed-point iteration → A*      │
 ├─────────────────────────────────────────────────────────┤
 │                    LLMBackend                           │
-│      OpenAI API  (structured + text calls)              │
+│  OpenAI Responses API  (structured + text calls)        │
+│  Reasoning effort auto-tuned per model family           │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -129,12 +130,12 @@ python fractal_tom_prompting.py demo
 Options:
 
 ```bash
-python fractal_tom_prompting.py demo --model gpt-4.1-mini --depth 3 --turns 8 --output result.json
+python fractal_tom_prompting.py demo --model gpt-5-mini --depth 3 --turns 8 --output result.json
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `gpt-4.1-mini` | OpenAI model identifier |
+| `--model` | `gpt-5-mini` | OpenAI model identifier (reasoning models recommended) |
 | `--depth` | `3` | Maximum ToM nesting depth |
 | `--turns` | `6` | Number of dialogue turns |
 | `--output` | `None` | Save full JSON result to file |
@@ -234,11 +235,12 @@ class FractalToMConfig:
     hutchinson_iterations: int = 3   # Fixed-point iterations before convergence
     convergence_threshold: float = 0.15  # Early-stop threshold for belief delta
     contraction_factor: float = 0.7  # Target contraction ratio c ∈ [0, 1)
-    model: str = "gpt-4.1-mini"     # OpenAI model identifier
-    temperature: float = 0.4        # Sampling temperature
+    model: str = "gpt-5-mini"       # OpenAI model identifier
     max_retries: int = 3            # API call retry budget
     verbose: bool = True            # Print progress to stdout
 ```
+
+> **Note:** Sampling hyper-parameters (`temperature`, `top_p`, `max_tokens`) are intentionally omitted — the latest reasoning model families (`gpt-5*`, `o*`) use fixed defaults and do not permit alteration. Instead, the framework automatically configures **reasoning effort** per model family (see below).
 
 | Parameter | Effect |
 |---|---|
@@ -246,6 +248,18 @@ class FractalToMConfig:
 | `hutchinson_iterations` | Higher → more iterations toward the belief attractor. Diminishing returns past 3–4. |
 | `contraction_factor` | Lower → faster confidence decay per nesting level. Controls fractal dimension. |
 | `convergence_threshold` | Lower → stricter convergence criterion. |
+
+### Reasoning Effort
+
+The `LLMBackend` automatically selects a `reasoning.effort` level based on the configured model:
+
+| Model Family | `reasoning.effort` | Rationale |
+|---|---|---|
+| `gpt-5.2*` | `"none"` | Full reasoning disabled — fastest / cheapest |
+| Other `gpt-5*` (e.g. `gpt-5-mini`) | `"minimal"` | Lightweight chain-of-thought |
+| `o*` series (`o1`, `o3`, `o4-mini`, …) | `"low"` | Standard low-effort reasoning |
+
+This is handled transparently; no manual configuration is required.
 
 ---
 

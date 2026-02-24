@@ -104,8 +104,6 @@ class FractalToMConfig:
         that the LLM degrades certainty by ≈ c at each nesting level.
     model : str
         OpenAI model identifier.
-    temperature : float
-        Sampling temperature for LLM calls.
     max_retries : int
         API call retry budget.
     verbose : bool
@@ -116,8 +114,7 @@ class FractalToMConfig:
     hutchinson_iterations: int = 3
     convergence_threshold: float = 0.15
     contraction_factor: float = 0.7
-    model: str = "gpt-4.1-mini"
-    temperature: float = 0.4
+    model: str = "gpt-5-mini"
     max_retries: int = 3
     verbose: bool = True
 
@@ -250,12 +247,19 @@ class DeceptionDetection(BaseModel):
     )
 
 
+class AgentBeliefSummary(BaseModel):
+    """One entry in the Hutchinson result's per-agent belief map."""
+
+    agent_name: str = Field(description="Name of the agent")
+    belief_summary: str = Field(description="Serialised belief state summary")
+
+
 class HutchinsonResult(BaseModel):
     """Result of one Hutchinson operator iteration."""
 
     iteration: int
-    agent_beliefs: Dict[str, str] = Field(
-        description="Map from agent name → serialised BeliefState summary",
+    agent_beliefs: List[AgentBeliefSummary] = Field(
+        description="Per-agent belief summaries",
     )
     delta_description: str = Field(
         description="Qualitative description of how beliefs changed",
@@ -368,15 +372,24 @@ class LLMBackend:
         self.config = config
         self._call_count = 0
 
+    @staticmethod
+    def _reasoning_effort(model: str) -> str:
+        """Return reasoning effort level for reasoning models."""
+        m = model.lower()
+        if m.startswith("gpt-5.2"):
+            return "none"
+        if m.startswith("gpt-5"):
+            return "minimal"
+        # o-series models (o1, o3, o4-mini, …)
+        return "low"
+
     def structured_call(
         self,
         system: str,
         user: str,
         schema: type[BaseModel],
-        temperature: Optional[float] = None,
     ) -> BaseModel:
         """Make a structured-output LLM call with retries."""
-        temp = temperature or self.config.temperature
         for attempt in range(1, self.config.max_retries + 1):
             try:
                 self._call_count += 1
@@ -387,7 +400,7 @@ class LLMBackend:
                         {"role": "user", "content": user},
                     ],
                     text_format=schema,
-                    temperature=temp,
+                    reasoning={"effort": self._reasoning_effort(self.config.model)},
                 )
                 if response.output_parsed is not None:
                     return response.output_parsed
@@ -406,10 +419,8 @@ class LLMBackend:
         self,
         system: str,
         user: str,
-        temperature: Optional[float] = None,
     ) -> str:
         """Make a plain-text LLM call."""
-        temp = temperature or self.config.temperature
         for attempt in range(1, self.config.max_retries + 1):
             try:
                 self._call_count += 1
@@ -419,7 +430,7 @@ class LLMBackend:
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
                     ],
-                    temperature=temp,
+                    reasoning={"effort": self._reasoning_effort(self.config.model)},
                 )
                 return response.output_text
             except Exception as e:
@@ -1055,8 +1066,12 @@ class HutchinsonOperator:
 
         # Step 3: Update belief states using the aggregated result
         new_beliefs: Dict[str, BeliefState] = {}
+        _belief_map = {
+            ab.agent_name: ab.belief_summary
+            for ab in hutch_result.agent_beliefs
+        }
         for name in self.agents:
-            summary = hutch_result.agent_beliefs.get(name, "")
+            summary = _belief_map.get(name, "")
             updated = copy.deepcopy(beliefs[name])
             # Augment observation history with iteration result
             updated.observation_history.append(
@@ -1873,7 +1888,7 @@ def main() -> None:
 
     # demo
     demo_p = sub.add_parser("demo", help="Run built-in demo scenario")
-    demo_p.add_argument("--model", default="gpt-4.1-mini")
+    demo_p.add_argument("--model", default="gpt-5-mini")
     demo_p.add_argument("--depth", type=int, default=3)
     demo_p.add_argument("--turns", type=int, default=6)
     demo_p.add_argument("--output", type=str, default=None)
@@ -1881,7 +1896,7 @@ def main() -> None:
     # run
     run_p = sub.add_parser("run", help="Run custom scenario from JSON file")
     run_p.add_argument("scenario_file", help="Path to scenario JSON")
-    run_p.add_argument("--model", default="gpt-4.1-mini")
+    run_p.add_argument("--model", default="gpt-5-mini")
     run_p.add_argument("--depth", type=int, default=3)
     run_p.add_argument("--turns", type=int, default=6)
     run_p.add_argument("--output", type=str, default=None)
