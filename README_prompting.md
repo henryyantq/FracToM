@@ -54,11 +54,11 @@ All of this is achieved purely through **structured prompting** of an OpenAI rea
 | Contraction mapping $f_i$ | `MindMapping`: a perspective-taking prompt for agent $i$ |
 | Composition $f_i \circ f_j$ | Recursive prompt chaining (nested ToM) |
 | Hutchinson operator $F(B)$ | `HutchinsonOperator`: aggregate all agents' mappings & iterate |
-| Fractal attractor $A^{*}$ | Converged equilibrium beliefs |
+| Fractal attractor $A^{\ast}$ | Converged equilibrium beliefs |
 | IFS parameter perturbation | `BeliefUpdate`: observation-driven mapping revision |
 | Hausdorff dimension $d_H$ | `estimate_hausdorff_dimension()`: quantitative ToM complexity |
 
-The key invariant: information **degrades** through perspective-taking. Each `MindMapping` acts as a contraction with ratio $c \in [0, 1)$, so confidence at nesting depth $k$ is approximately $c^k$. The Hutchinson operator iterates the union of all agents' mappings until beliefs converge to a fixed-point attractor $A^{*}$.
+The key invariant: information **degrades** through perspective-taking. Each `MindMapping` acts as a contraction with ratio $c \in [0, 1)$, so confidence at nesting depth $k$ is approximately $c^k$. The Hutchinson operator iterates the union of all agents' mappings until beliefs converge to a fixed-point attractor $A^{\ast}$.
 
 ---
 
@@ -429,7 +429,7 @@ via bisection.
 
 When observations perturb the IFS parameters, the upper bound on attractor drift is:
 
-$$d_H(A^{*}, A^{*\prime}) \leq \frac{1}{1 - c} \cdot \max_i \sup_b \, d(f_i(b), f_i'(b))$$
+$$d_H(A^{\ast}, A^{\ast\prime}) \leq \frac{1}{1 - c} \cdot \max_i \sup_b \, d(f_i(b), f_i'(b))$$
 
 ### Interpretation
 
