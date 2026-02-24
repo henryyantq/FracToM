@@ -50,15 +50,15 @@ All of this is achieved purely through **structured prompting** of an OpenAI rea
 
 | Mathematical Object | Prompting Realisation |
 |---|---|
-| Belief space **B** | Structured `BeliefState` object |
-| Contraction mapping **f_i** | `MindMapping`: a perspective-taking prompt for agent *i* |
-| Composition **f_i ∘ f_j** | Recursive prompt chaining (nested ToM) |
-| Hutchinson operator **F(B)** | `HutchinsonOperator`: aggregate all agents' mappings & iterate |
-| Fractal attractor **A*** | Converged equilibrium beliefs |
+| Belief space $\mathbf{B}$ | Structured `BeliefState` object |
+| Contraction mapping $f_i$ | `MindMapping`: a perspective-taking prompt for agent $i$ |
+| Composition $f_i \circ f_j$ | Recursive prompt chaining (nested ToM) |
+| Hutchinson operator $F(B)$ | `HutchinsonOperator`: aggregate all agents' mappings & iterate |
+| Fractal attractor $A^{*}$ | Converged equilibrium beliefs |
 | IFS parameter perturbation | `BeliefUpdate`: observation-driven mapping revision |
-| Hausdorff dimension **d_H** | `estimate_hausdorff_dimension()`: quantitative ToM complexity |
+| Hausdorff dimension $d_H$ | `estimate_hausdorff_dimension()`: quantitative ToM complexity |
 
-The key invariant: information **degrades** through perspective-taking. Each `MindMapping` acts as a contraction with ratio *c* ∈ [0, 1), so confidence at nesting depth *k* is approximately *c^k*. The Hutchinson operator iterates the union of all agents' mappings until beliefs converge to a fixed-point attractor **A***.
+The key invariant: information **degrades** through perspective-taking. Each `MindMapping` acts as a contraction with ratio $c \in [0, 1)$, so confidence at nesting depth $k$ is approximately $c^k$. The Hutchinson operator iterates the union of all agents' mappings until beliefs converge to a fixed-point attractor $A^{*}$.
 
 ---
 
@@ -267,7 +267,7 @@ This is handled transparently; no manual configuration is required.
 
 ### BeliefState
 
-The fundamental element of the belief space **B**. A structured Pydantic model containing:
+The fundamental element of the belief space $\mathbf{B}$. A structured Pydantic model containing:
 
 - **`world_model`** — the agent's representation of the objective situation.
 - **`self_bdi`** — the agent's own Belief-Desire-Intention triple (Bratman, 1987).
@@ -288,7 +288,7 @@ Defines an agent's identity and capabilities:
 
 ### MindMapping
 
-Implements contraction mapping **f_i: B → B** for agent *i*. Each call prompts the LLM to transform a belief state through agent *i*'s perspective — a cognitive compression that mirrors the mathematical contraction property.
+Implements contraction mapping $f_i: B \to B$ for agent $i$. Each call prompts the LLM to transform a belief state through agent $i$'s perspective — a cognitive compression that mirrors the mathematical contraction property.
 
 ```python
 mapping = MindMapping(agent_profile, llm_backend, config)
@@ -318,10 +318,10 @@ all_nested = computer.compute_all_chains("Alice", ground_situation, max_depth=3)
 
 ### HutchinsonOperator
 
-Implements **F(B) = ⋃ᵢ fᵢ(B)** with fixed-point iteration:
+Implements $F(B) = \bigcup_i f_i(B)$ with fixed-point iteration:
 
-1. Initialises beliefs **B₀** for all agents.
-2. Iterates **B_{k+1} = F(B_k)** applying all contraction mappings.
+1. Initialises beliefs $B_0$ for all agents.
+2. Iterates $B_{k+1} = F(B_k)$ applying all contraction mappings.
 3. Aggregates via an LLM call that identifies conflicts, agreements, and convergence.
 4. Stops when the estimated belief delta falls below the convergence threshold.
 
@@ -413,13 +413,13 @@ python fractal_tom_prompting.py demo
 
 The fractal complexity of the belief attractor is estimated via the **Hausdorff dimension**:
 
-**Homogeneous case** (all agents share contraction factor *c*):
+**Homogeneous case** (all agents share contraction factor $c$):
 
 $$d_H = \frac{\log n}{\log(1/c)}$$
 
-where *n* is the number of agents.
+where $n$ is the number of agents.
 
-**Heterogeneous case** (per-agent contraction factors *c_i*): solve the **Moran equation**
+**Heterogeneous case** (per-agent contraction factors $c_i$): solve the **Moran equation**
 
 $$\sum_i c_i^{d_H} = 1$$
 
@@ -429,16 +429,16 @@ via bisection.
 
 When observations perturb the IFS parameters, the upper bound on attractor drift is:
 
-$$d_H(A^*, A^{*\prime}) \leq \frac{1}{1 - c} \cdot \max_i \sup_b \, d(f_i(b), f_i'(b))$$
+$$d_H(A^{*}, A^{*\prime}) \leq \frac{1}{1 - c} \cdot \max_i \sup_b \, d(f_i(b), f_i'(b))$$
 
 ### Interpretation
 
-| d_H Range | Interpretation |
+| $d_H$ Range | Interpretation |
 |---|---|
-| < 1.0 | Near-trivial: belief structure is almost discrete |
-| 1.0 – 2.0 | Low complexity: limited recursive mentalising |
-| 2.0 – 3.0 | Moderate: meaningful nested perspective-taking |
-| > 3.0 | High complexity: deeply recursive social cognition |
+| $< 1.0$ | Near-trivial: belief structure is almost discrete |
+| $1.0 - 2.0$ | Low complexity: limited recursive mentalising |
+| $2.0 - 3.0$ | Moderate: meaningful nested perspective-taking |
+| $> 3.0$ | High complexity: deeply recursive social cognition |
 
 ---
 
